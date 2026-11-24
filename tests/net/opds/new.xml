@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:os="http://a9.com/-/spec/opensearch/1.1/">
+  <id>urn:washi:test:new:1</id>
+  <title>Новинки</title>
+  <link rel="self" href="new" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="search" href="search?q={searchTerms}" type="application/atom+xml"/>
+  <link rel="next" href="new2" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <entry>
+    <title>Мцыри</title>
+    <id>urn:washi:test:book:0</id>
+    <updated>2026-11-20T10:00:00Z</updated>
+    <author><name>Лермонтов Михаил</name><uri>/a/0</uri></author>
+    <summary type="text">Классика. Мцыри — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. Классика. Мцыри — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. Классика. Мцыри — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. </summary>
+    <link rel="http://opds-spec.org/image" href="../img/cover0.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb0.png" type="image/png"/>
+    <link rel="related" href="author0" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/scan-flate.pdf" type="application/pdf" length="3000000"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/test.epub" type="application/epub+zip"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/book0.fb2.zip" type="application/fb2+zip"/>
+    <link rel="http://opds-spec.org/acquisition/buy" href="../buy/0" type="application/epub+zip"/>
+  </entry>
+  <entry>
+    <title>Герой нашего времени</title>
+    <id>urn:washi:test:book:1</id>
+    <updated>2026-11-21T10:00:00Z</updated>
+    <author><name>Лермонтов Михаил</name><uri>/a/1</uri></author>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Первый абзац про <b>Герой нашего времени</b>.</p><p>Второй абзац &amp; ещё текст<br/>после переноса.</p></div></content>
+    <link rel="http://opds-spec.org/image" href="../img/cover1.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb1.png" type="image/png"/>
+    <link rel="related" href="author1" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/fiction-1.pdf" type="application/pdf"/>
+  </entry>
+  <entry>
+    <title>Война и мир</title>
+    <id>urn:washi:test:book:2</id>
+    <updated>2026-11-22T10:00:00Z</updated>
+    <author><name>Толстой Лев</name><uri>/a/2</uri></author>
+    <content type="html">&lt;p&gt;Аннотация в &lt;i&gt;HTML&lt;/i&gt;:&amp;nbsp;Война и мир&lt;/p&gt;&lt;p&gt;Ещё абзац &amp;mdash; с тире.&lt;/p&gt;</content>
+    <link rel="http://opds-spec.org/image" href="../img/cover2.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb2.png" type="image/png"/>
+    <link rel="related" href="author2" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/book2.djvu" type="image/vnd.djvu"/>
+  </entry>
+  <entry>
+    <title>Анна Каренина</title>
+    <id>urn:washi:test:book:3</id>
+    <updated>2026-11-23T10:00:00Z</updated>
+    <author><name>Толстой Лев</name><uri>/a/3</uri></author>
+    <content type="text"><![CDATA[Текст в CDATA: <b>не тег</b> Анна Каренина & прочее]]></content>
+    <link rel="http://opds-spec.org/image" href="../img/cover3.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb3.png" type="image/png"/>
+    <link rel="related" href="author3" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/test.epub" type="application/epub+zip"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/anon" type="application/octet-stream"/>
+  </entry>
+  <entry>
+    <title>Мастер и Маргарита</title>
+    <id>urn:washi:test:book:4</id>
+    <updated>2026-11-24T10:00:00Z</updated>
+    <author><name>Булгаков Михаил</name><uri>/a/4</uri></author>
+    <summary type="text">Классика. Мастер и Маргарита — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. Классика. Мастер и Маргарита — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. Классика. Мастер и Маргарита — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. </summary>
+    <link rel="http://opds-spec.org/image" href="../img/cover4.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb4.png" type="image/png"/>
+    <link rel="related" href="author4" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/test.epub?name=x&amp;v=2" type="application/zip"/>
+  </entry>
+  <entry>
+    <title>Евгений Онегин</title>
+    <id>urn:washi:test:book:5</id>
+    <updated>2026-11-25T10:00:00Z</updated>
+    <author><name>Пушкин Александр</name><uri>/a/5</uri></author>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Первый абзац про <b>Евгений Онегин</b>.</p><p>Второй абзац &amp; ещё текст<br/>после переноса.</p></div></content>
+    <link rel="http://opds-spec.org/image" href="../img/cover5.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb5.png" type="image/png"/>
+    <link rel="related" href="author5" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/scan-flate.pdf" type="application/pdf" length="3000005"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/test.epub" type="application/epub+zip"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/book5.fb2.zip" type="application/fb2+zip"/>
+    <link rel="http://opds-spec.org/acquisition/buy" href="../buy/5" type="application/epub+zip"/>
+  </entry>
+  <entry>
+    <title>Горе от ума</title>
+    <id>urn:washi:test:book:6</id>
+    <updated>2026-11-26T10:00:00Z</updated>
+    <author><name>Грибоедов Александр</name><uri>/a/6</uri></author>
+    <content type="html">&lt;p&gt;Аннотация в &lt;i&gt;HTML&lt;/i&gt;:&amp;nbsp;Горе от ума&lt;/p&gt;&lt;p&gt;Ещё абзац &amp;mdash; с тире.&lt;/p&gt;</content>
+    <link rel="http://opds-spec.org/image" href="../img/cover6.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb6.png" type="image/png"/>
+    <link rel="related" href="author6" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/fiction-1.pdf" type="application/pdf"/>
+  </entry>
+  <entry>
+    <title>Преступление и наказание</title>
+    <id>urn:washi:test:book:7</id>
+    <updated>2026-11-27T10:00:00Z</updated>
+    <author><name>Достоевский Фёдор</name><uri>/a/7</uri></author>
+    <content type="text"><![CDATA[Текст в CDATA: <b>не тег</b> Преступление и наказание & прочее]]></content>
+    <link rel="http://opds-spec.org/image" href="../img/cover7.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb7.png" type="image/png"/>
+    <link rel="related" href="author7" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/book7.djvu" type="image/vnd.djvu"/>
+  </entry>
+  <entry>
+    <title>Идиот</title>
+    <id>urn:washi:test:book:8</id>
+    <updated>2026-11-28T10:00:00Z</updated>
+    <author><name>Достоевский Фёдор</name><uri>/a/8</uri></author>
+    <summary type="text">Классика. Идиот — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. Классика. Идиот — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. Классика. Идиот — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. </summary>
+    <link rel="http://opds-spec.org/image" href="../img/cover8.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb8.png" type="image/png"/>
+    <link rel="related" href="author8" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/test.epub" type="application/epub+zip"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/anon" type="application/octet-stream"/>
+  </entry>
+  <entry>
+    <title>Отцы и дети</title>
+    <id>urn:washi:test:book:9</id>
+    <updated>2026-11-20T10:00:00Z</updated>
+    <author><name>Тургенев Иван</name><uri>/a/9</uri></author>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Первый абзац про <b>Отцы и дети</b>.</p><p>Второй абзац &amp; ещё текст<br/>после переноса.</p></div></content>
+    <link rel="http://opds-spec.org/image" href="../img/cover9.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb9.png" type="image/png"/>
+    <link rel="related" href="author9" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/test.epub?name=x&amp;v=2" type="application/zip"/>
+  </entry>
+  <entry>
+    <title>Серии и циклы</title>
+    <id>urn:washi:test:series</id>
+    <content type="text">Раздел внутри списка книг</content>
+    <link rel="subsection" href="genres" type="application/atom+xml;profile=opds-catalog"/>
+  </entry>
+</feed>

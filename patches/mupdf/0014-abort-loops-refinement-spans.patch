@@ -1,0 +1,389 @@
+--- a/source/fitz/draw-affine.c
++++ b/source/fitz/draw-affine.c
+@@ -22,6 +22,7 @@
+ 
+ #include "mupdf/fitz.h"
+ #include "draw-imp.h"
++#include "image-imp.h"
+ 
+ #include <math.h>
+ #include <float.h>
+@@ -4154,6 +4155,9 @@
+ 
+ 	while (h--)
+ 	{
++		/* washi: an aborted page is thrown away; stop painting it. */
++		if ((h & 63) == 0 && fz_washi_aborted())
++			return;
+ 		paintfn(dp, da, sp, sw, sh, ss, sa, u, v, fa, fb, w, dn, sn, alpha, color, hp, gp, eop);
+ 		dp += dst->stride;
+ 		hp += hs;
+--- a/source/fitz/draw-paint.c
++++ b/source/fitz/draw-paint.c
+@@ -1076,6 +1076,37 @@
+ paint_span_with_color_1_solid(byte * FZ_RESTRICT dp, const byte * FZ_RESTRICT mp, int n, int w, const byte * FZ_RESTRICT color, int da, const fz_overprint * FZ_RESTRICT eop)
+ {
+ 	TRACK_FN();
++	/* washi: in long spans eight pixels at a time where the coverage is all
++	 * none (nothing to do: gaps in text drawn as paths) or all full (the colour:
++	 * fills of large areas); mixed ones and short spans (glyphs) pixel by pixel,
++	 * as template_span_with_color_N_general_solid. */
++	if (w >= 32)
++	{
++		const byte c = color[0];
++		uint64_t c8 = c * 0x0101010101010101ull;
++		while (w > 8)
++		{
++			uint64_t m;
++			memcpy(&m, mp, 8);
++			if (m == ~(uint64_t)0)
++				memcpy(dp, &c8, 8);
++			else if (m != 0)
++			{
++				int k;
++				for (k = 0; k < 8; k++)
++				{
++					int ma = mp[k];
++					if (ma == 255)
++						dp[k] = c;
++					else if (ma != 0)
++						dp[k] = FZ_BLEND(c, dp[k], FZ_EXPAND(ma));
++				}
++			}
++			dp += 8;
++			mp += 8;
++			w -= 8;
++		}
++	}
+ 	template_span_with_color_N_general_solid(dp, mp, 1, w, color, 0);
+ }
+ 
+--- a/source/fitz/draw-scale-simple.c
++++ b/source/fitz/draw-scale-simple.c
+@@ -35,6 +35,7 @@
+ #include "mupdf/fitz.h"
+ 
+ #include "draw-imp.h"
++#include "image-imp.h"
+ #include "pixmap-imp.h"
+ 
+ #include <math.h>
+@@ -2138,6 +2139,9 @@
+ 			int row_index = contrib_rows->index[row];
+ 			int row_min = contrib_rows->index[row_index++];
+ 			int row_len = contrib_rows->index[row_index];
++			/* washi: an aborted page is thrown away; stop scaling for it. */
++			if ((row & 63) == 0 && fz_washi_aborted())
++				break;
+ 			while (max_row < row_min+row_len)
+ 			{
+ 				/* Scale another row */
+--- a/thirdparty/jbig2dec/jbig2_refinement.c
++++ b/thirdparty/jbig2dec/jbig2_refinement.c
+@@ -43,6 +43,30 @@
+ #include "jbig2_image_rw.h"
+ #endif
+ 
++/* washi: jbig2_image_get_pixel and jbig2_image_set_pixel inlined (the same
++   result); refinement looks up 10 to 13 pixels per decoded pixel. */
++static inline int
++ref_get_pixel(const Jbig2Image *image, int64_t x, int64_t y)
++{
++    if ((uint64_t) x >= (uint64_t) image->width || (uint64_t) y >= (uint64_t) image->height)
++        return 0;
++    return (image->data[((size_t) x >> 3) + (size_t) y * image->stride] >> (7 - (x & 7))) & 1;
++}
++
++static inline void
++ref_set_pixel(Jbig2Image *image, int64_t x, int64_t y, int value)
++{
++    byte *p;
++    int bit;
++
++    if ((uint64_t) x >= (uint64_t) image->width || (uint64_t) y >= (uint64_t) image->height)
++        return;
++    p = image->data + ((size_t) x >> 3) + (size_t) y * image->stride;
++    bit = 7 - (x & 7);
++    *p = (byte) ((*p & ~(1 << bit)) | ((value & 1) << bit));
++}
++
++
+ #define pixel_outside_field(x, y) \
+     ((y) < -128 || (y) > 0 || (x) < -128 || ((y) < 0 && (x) > 127) || ((y) == 0 && (x) >= 0))
+ #define refpixel_outside_field(x, y) \
+@@ -68,25 +92,27 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GRH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         for (x = 0; x < GRW; x++) {
+             CONTEXT = 0;
+-            CONTEXT |= jbig2_image_get_pixel(image, x - 1, y + 0) << 0;
+-            CONTEXT |= jbig2_image_get_pixel(image, x + 1, y - 1) << 1;
+-            CONTEXT |= jbig2_image_get_pixel(image, x + 0, y - 1) << 2;
+-            CONTEXT |= jbig2_image_get_pixel(image, x + params->grat[0], y + params->grat[1]) << 3;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy + 1) << 4;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy + 1) << 5;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx - 1, y - dy + 1) << 6;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy + 0) << 7;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy + 0) << 8;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx - 1, y - dy + 0) << 9;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy - 1) << 10;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy - 1) << 11;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + params->grat[2], y - dy + params->grat[3]) << 12;
++            CONTEXT |= ref_get_pixel(image, x - 1, y + 0) << 0;
++            CONTEXT |= ref_get_pixel(image, x + 1, y - 1) << 1;
++            CONTEXT |= ref_get_pixel(image, x + 0, y - 1) << 2;
++            CONTEXT |= ref_get_pixel(image, x + params->grat[0], y + params->grat[1]) << 3;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy + 1) << 4;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy + 1) << 5;
++            CONTEXT |= ref_get_pixel(ref, x - dx - 1, y - dy + 1) << 6;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy + 0) << 7;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy + 0) << 8;
++            CONTEXT |= ref_get_pixel(ref, x - dx - 1, y - dy + 0) << 9;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy - 1) << 10;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy - 1) << 11;
++            CONTEXT |= ref_get_pixel(ref, x - dx + params->grat[2], y - dy + params->grat[3]) << 12;
+             bit = jbig2_arith_decode(ctx, as, &GR_stats[CONTEXT]);
+             if (bit < 0)
+                 return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, segment->number, "failed to decode arithmetic code when handling refinement template0");
+-            jbig2_image_set_pixel(image, x, y, bit);
++            ref_set_pixel(image, x, y, bit);
+         }
+     }
+ #ifdef JBIG2_DEBUG_DUMP
+@@ -125,22 +151,24 @@
+     int bit;
+ 
+     for (y = 0; y < GRH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         for (x = 0; x < GRW; x++) {
+             CONTEXT = 0;
+-            CONTEXT |= jbig2_image_get_pixel(image, x - 1, y + 0) << 0;
+-            CONTEXT |= jbig2_image_get_pixel(image, x + 1, y - 1) << 1;
+-            CONTEXT |= jbig2_image_get_pixel(image, x + 0, y - 1) << 2;
+-            CONTEXT |= jbig2_image_get_pixel(image, x - 1, y - 1) << 3;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy + 1) << 4;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy + 1) << 5;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy + 0) << 6;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy + 0) << 7;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx - 1, y - dy + 0) << 8;
+-            CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy - 1) << 9;
++            CONTEXT |= ref_get_pixel(image, x - 1, y + 0) << 0;
++            CONTEXT |= ref_get_pixel(image, x + 1, y - 1) << 1;
++            CONTEXT |= ref_get_pixel(image, x + 0, y - 1) << 2;
++            CONTEXT |= ref_get_pixel(image, x - 1, y - 1) << 3;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy + 1) << 4;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy + 1) << 5;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy + 0) << 6;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy + 0) << 7;
++            CONTEXT |= ref_get_pixel(ref, x - dx - 1, y - dy + 0) << 8;
++            CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy - 1) << 9;
+             bit = jbig2_arith_decode(ctx, as, &GR_stats[CONTEXT]);
+             if (bit < 0)
+                 return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, segment->number, "failed to decode arithmetic code when handling refinement template0");
+-            jbig2_image_set_pixel(image, x, y, bit);
++            ref_set_pixel(image, x, y, bit);
+         }
+     }
+ 
+@@ -181,6 +209,8 @@
+     int64_t x, y;
+ 
+     for (y = 0; y < GRH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         const int padded_width = (GRW + 7) & -8;
+         uint32_t CONTEXT;
+         uint32_t refline_m1;    /* previous line of the reference bitmap */
+@@ -246,18 +276,18 @@
+     Jbig2Image *ref = params->GRREFERENCE;
+     const int64_t i = x - params->GRREFERENCEDX;
+     const int64_t j = y - params->GRREFERENCEDY;
+-    int m = jbig2_image_get_pixel(ref, i, j);
++    int m = ref_get_pixel(ref, i, j);
+ 
+     (void) image;
+ 
+-    return ((jbig2_image_get_pixel(ref, i - 1, j - 1) == m) &&
+-            (jbig2_image_get_pixel(ref, i, j - 1) == m) &&
+-            (jbig2_image_get_pixel(ref, i + 1, j - 1) == m) &&
+-            (jbig2_image_get_pixel(ref, i - 1, j) == m) &&
+-            (jbig2_image_get_pixel(ref, i + 1, j) == m) &&
+-            (jbig2_image_get_pixel(ref, i - 1, j + 1) == m) &&
+-            (jbig2_image_get_pixel(ref, i, j + 1) == m) &&
+-            (jbig2_image_get_pixel(ref, i + 1, j + 1) == m)
++    return ((ref_get_pixel(ref, i - 1, j - 1) == m) &&
++            (ref_get_pixel(ref, i, j - 1) == m) &&
++            (ref_get_pixel(ref, i + 1, j - 1) == m) &&
++            (ref_get_pixel(ref, i - 1, j) == m) &&
++            (ref_get_pixel(ref, i + 1, j) == m) &&
++            (ref_get_pixel(ref, i - 1, j + 1) == m) &&
++            (ref_get_pixel(ref, i, j + 1) == m) &&
++            (ref_get_pixel(ref, i + 1, j + 1) == m)
+            )? m : -1;
+ }
+ 
+@@ -269,19 +299,19 @@
+     const int32_t dy = params->GRREFERENCEDY;
+     uint32_t CONTEXT;
+ 
+-    CONTEXT = jbig2_image_get_pixel(image, x - 1, y + 0);
+-    CONTEXT |= jbig2_image_get_pixel(image, x + 1, y - 1) << 1;
+-    CONTEXT |= jbig2_image_get_pixel(image, x + 0, y - 1) << 2;
+-    CONTEXT |= jbig2_image_get_pixel(image, x + params->grat[0], y + params->grat[1]) << 3;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy + 1) << 4;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy + 1) << 5;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx - 1, y - dy + 1) << 6;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy + 0) << 7;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy + 0) << 8;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx - 1, y - dy + 0) << 9;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy - 1) << 10;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy - 1) << 11;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + params->grat[2], y - dy + params->grat[3]) << 12;
++    CONTEXT = ref_get_pixel(image, x - 1, y + 0);
++    CONTEXT |= ref_get_pixel(image, x + 1, y - 1) << 1;
++    CONTEXT |= ref_get_pixel(image, x + 0, y - 1) << 2;
++    CONTEXT |= ref_get_pixel(image, x + params->grat[0], y + params->grat[1]) << 3;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy + 1) << 4;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy + 1) << 5;
++    CONTEXT |= ref_get_pixel(ref, x - dx - 1, y - dy + 1) << 6;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy + 0) << 7;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy + 0) << 8;
++    CONTEXT |= ref_get_pixel(ref, x - dx - 1, y - dy + 0) << 9;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy - 1) << 10;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy - 1) << 11;
++    CONTEXT |= ref_get_pixel(ref, x - dx + params->grat[2], y - dy + params->grat[3]) << 12;
+     return CONTEXT;
+ }
+ 
+@@ -293,16 +323,16 @@
+     const int32_t dy = params->GRREFERENCEDY;
+     uint32_t CONTEXT;
+ 
+-    CONTEXT = jbig2_image_get_pixel(image, x - 1, y + 0);
+-    CONTEXT |= jbig2_image_get_pixel(image, x + 1, y - 1) << 1;
+-    CONTEXT |= jbig2_image_get_pixel(image, x + 0, y - 1) << 2;
+-    CONTEXT |= jbig2_image_get_pixel(image, x - 1, y - 1) << 3;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy + 1) << 4;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy + 1) << 5;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 1, y - dy + 0) << 6;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy + 0) << 7;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx - 1, y - dy + 0) << 8;
+-    CONTEXT |= jbig2_image_get_pixel(ref, x - dx + 0, y - dy - 1) << 9;
++    CONTEXT = ref_get_pixel(image, x - 1, y + 0);
++    CONTEXT |= ref_get_pixel(image, x + 1, y - 1) << 1;
++    CONTEXT |= ref_get_pixel(image, x + 0, y - 1) << 2;
++    CONTEXT |= ref_get_pixel(image, x - 1, y - 1) << 3;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy + 1) << 4;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy + 1) << 5;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 1, y - dy + 0) << 6;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy + 0) << 7;
++    CONTEXT |= ref_get_pixel(ref, x - dx - 1, y - dy + 0) << 8;
++    CONTEXT |= ref_get_pixel(ref, x - dx + 0, y - dy - 1) << 9;
+     return CONTEXT;
+ }
+ 
+@@ -323,6 +353,8 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GRH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, JBIG2_UNKNOWN_SEGMENT_NUMBER, "decoding aborted");
+         int bit = jbig2_arith_decode(ctx, as, &GR_stats[start_context]);
+         if (bit < 0)
+             return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, JBIG2_UNKNOWN_SEGMENT_NUMBER, "failed to decode arithmetic code when handling refinement TPGRON1");
+@@ -332,7 +364,7 @@
+                 bit = jbig2_arith_decode(ctx, as, &GR_stats[mkctx(params, image, x, y)]);
+                 if (bit < 0)
+                     return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, JBIG2_UNKNOWN_SEGMENT_NUMBER, "failed to decode arithmetic code when handling refinement TPGRON1");
+-                jbig2_image_set_pixel(image, x, y, bit);
++                ref_set_pixel(image, x, y, bit);
+             }
+         } else {
+             for (x = 0; x < GRW; x++) {
+@@ -341,9 +373,9 @@
+                     int bit = jbig2_arith_decode(ctx, as, &GR_stats[mkctx(params, image, x, y)]);
+                     if (bit < 0)
+                         return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, JBIG2_UNKNOWN_SEGMENT_NUMBER, "failed to decode arithmetic code when handling refinement TPGRON1");
+-                    jbig2_image_set_pixel(image, x, y, bit);
++                    ref_set_pixel(image, x, y, bit);
+                 } else
+-                    jbig2_image_set_pixel(image, x, y, iv);
++                    ref_set_pixel(image, x, y, iv);
+             }
+         }
+     }
+--- a/thirdparty/jbig2dec/jbig2_text.c
++++ b/thirdparty/jbig2dec/jbig2_text.c
+@@ -269,6 +269,10 @@
+         first_symbol = TRUE;
+         /* 6.4.5 (3c) - decode symbols in strip */
+         for (;;) {
++            if (jbig2_aborted(ctx)) {
++                code = jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
++                goto cleanup2;
++            }
+             /* (3c.i) */
+             if (first_symbol) {
+                 /* 6.4.7 */
+--- a/thirdparty/openjpeg/src/lib/openjp2/dwt.c
++++ b/thirdparty/openjpeg/src/lib/openjp2/dwt.c
+@@ -43,6 +43,9 @@
+ #define OPJ_SKIP_POISON
+ #include "opj_includes.h"
+ 
++/* washi: see t1.c. */
++extern _Thread_local const volatile int *opj_washi_abort;
++
+ #ifdef __SSE__
+ #include <xmmintrin.h>
+ #endif
+@@ -2334,6 +2337,11 @@
+         OPJ_INT32 * OPJ_RESTRICT tiledp = tilec->data;
+         OPJ_UINT32 j;
+ 
++        if (opj_washi_abort && *opj_washi_abort) {
++            opj_aligned_free(h.mem);
++            return OPJ_FALSE;
++        }
++
+         ++tr;
+         h.sn = (OPJ_INT32)rw;
+         v.sn = (OPJ_INT32)rh;
+@@ -3652,6 +3660,11 @@
+         OPJ_FLOAT32 * OPJ_RESTRICT aj = (OPJ_FLOAT32*) tilec->data;
+         OPJ_UINT32 j;
+ 
++        if (opj_washi_abort && *opj_washi_abort) {
++            opj_aligned_free(h.wavelet);
++            return OPJ_FALSE;
++        }
++
+         h.sn = (OPJ_INT32)rw;
+         v.sn = (OPJ_INT32)rh;
+ 
+--- a/thirdparty/openjpeg/src/lib/openjp2/tcd.c
++++ b/thirdparty/openjpeg/src/lib/openjp2/tcd.c
+@@ -40,6 +40,9 @@
+  */
+ 
+ #include "opj_includes.h"
++
++/* washi: see t1.c. */
++extern _Thread_local const volatile int *opj_washi_abort;
+ #include "opj_common.h"
+ 
+ // #define DEBUG_RATE_ALLOC
+@@ -1778,6 +1781,9 @@
+ 
+     /*----------------MCT-------------------*/
+     /* FIXME _ProfStart(PGROUP_MCT); */
++    if (opj_washi_abort && *opj_washi_abort) {
++        return OPJ_FALSE;
++    }
+     if
+     (! opj_tcd_mct_decode(p_tcd, p_manager)) {
+         return OPJ_FALSE;

@@ -1,0 +1,339 @@
+--- a/source/fitz/draw-scale-simple.c
++++ b/source/fitz/draw-scale-simple.c
+@@ -1323,47 +1323,67 @@
+ 
+ /* Horizontal pass: eight output pixels at a time. Their source pixels lie in one
+  * 32 byte window; for each weight position k a table lookup (vtbl4) gathers the
+- * eight source bytes and a multiply-accumulate adds them in. */
++ * eight source bytes and a multiply-accumulate adds them in. The tables of all
++ * groups follow each other (16 bytes per weight position: 8 window offsets, 8
++ * weights), so that a row's worth fits the L1 cache; two groups are worked on at
++ * once to keep two independent chains of multiply-accumulates. */
+ #define NEON_WINDOW 32
+ #define NEON_MAX_TAPS 12
+ 
+ typedef struct
+ {
+ 	int base;	/* first byte of the source window */
+-	int taps;	/* weight positions used; 0 — this group is done the plain way */
+-	int wide;	/* a weight is 256, so the u16 multiply is needed */
++	int taps;	/* weight positions; 0 — this group is done the plain way */
+ 	int contrib;	/* index of the group's first record in weights->index */
+-	uint8_t idx[NEON_MAX_TAPS][8];	/* window offsets; 0xff gives 0 */
+-	uint8_t w8[NEON_MAX_TAPS][8];
+-	uint16_t w16[NEON_MAX_TAPS][8];
+ } neon_group;
+ 
+ typedef struct
+ {
+ 	int groups;		/* full groups of eight */
+ 	int tail_contrib;	/* index of the record of the first pixel after them */
+-	neon_group group[FZ_FLEXIBLE_ARRAY];
++	neon_group *group;
++	uint8_t *data;		/* per group with taps > 0: taps x (8 offsets, 8 weights) */
+ } neon_plan;
+ 
++static void
++neon_plan_free(fz_context *ctx, neon_plan *plan)
++{
++	if (plan)
++	{
++		fz_free(ctx, plan->group);
++		fz_free(ctx, plan->data);
++		fz_free(ctx, plan);
++	}
++}
++
+ static neon_plan *
+ neon_plan_new(fz_context *ctx, const fz_weights *weights, int src_w)
+ {
+ 	int groups = weights->count / 8;
+ 	int pos = weights->index[0];
+ 	neon_plan *plan;
++	uint8_t *d;
+ 	int g, i, k;
+ 
+ 	if (weights->flip || weights->n != 1 || groups == 0 || src_w < NEON_WINDOW)
+ 		return NULL;
+-	plan = fz_malloc_no_throw(ctx, offsetof(neon_plan, group) + sizeof(neon_group) * (size_t)groups);
++	plan = fz_malloc_no_throw(ctx, sizeof *plan);
+ 	if (!plan)
+ 		return NULL;
+ 	plan->groups = groups;
++	plan->group = fz_malloc_no_throw(ctx, sizeof *plan->group * (size_t)groups);
++	plan->data = fz_malloc_no_throw(ctx, (size_t)groups * NEON_MAX_TAPS * 16);
++	if (!plan->group || !plan->data)
++	{
++		neon_plan_free(ctx, plan);
++		return NULL;
++	}
++	d = plan->data;
+ 	for (g = 0; g < groups; g++)
+ 	{
+ 		neon_group *grp = &plan->group[g];
+ 		int mins[8], lens[8], wpos[8];
+-		int lo = INT_MAX, hi = 0, taps = 0, ok = 1, wide = 0;
++		int lo = INT_MAX, hi = 0, taps = 0, ok = 1;
+ 
+ 		grp->contrib = pos;
+ 		for (i = 0; i < 8; i++)
+@@ -1374,10 +1394,10 @@
+ 			wpos[i] = pos;
+ 			for (k = 0; k < lens[i]; k++)
+ 			{
++				/* 256 does not fit the 8 bit multiply: such groups go the plain way. */
+ 				int v = weights->index[pos + k];
+-				if (v < 0 || v > 256)
++				if (v < 0 || v > 255)
+ 					ok = 0;
+-				wide |= v == 256;
+ 				sum += v;
+ 			}
+ 			if (sum > 256)
+@@ -1394,15 +1414,12 @@
+ 			taps = 0;
+ 		grp->base = lo;
+ 		grp->taps = taps;
+-		grp->wide = wide;
+-		for (k = 0; k < taps; k++)
++		for (k = 0; k < taps; k++, d += 16)
+ 			for (i = 0; i < 8; i++)
+ 			{
+ 				int in = k < lens[i];
+-				int v = in ? weights->index[wpos[i] + k] : 0;
+-				grp->idx[k][i] = in ? mins[i] + k - lo : 0xff;
+-				grp->w8[k][i] = (uint8_t)v;
+-				grp->w16[k][i] = (uint16_t)v;
++				d[i] = in ? mins[i] + k - lo : 0xff;
++				d[8 + i] = in ? (uint8_t)weights->index[wpos[i] + k] : 0;
+ 			}
+ 	}
+ 	plan->tail_contrib = pos;
+@@ -1424,38 +1441,64 @@
+ 	}
+ }
+ 
++static inline uint8x8x4_t
++neon_window(const unsigned char *s)
++{
++	uint8x16_t q0 = vld1q_u8(s), q1 = vld1q_u8(s + 16);
++	uint8x8x4_t t;
++	t.val[0] = vget_low_u8(q0);
++	t.val[1] = vget_high_u8(q0);
++	t.val[2] = vget_low_u8(q1);
++	t.val[3] = vget_high_u8(q1);
++	return t;
++}
++
+ static void
+ neon_row_to_temp1(unsigned char * FZ_RESTRICT dst, const unsigned char * FZ_RESTRICT src, const fz_weights * FZ_RESTRICT weights, const neon_plan *plan)
+ {
+-	int g, k;
++	const uint8_t *d = plan->data;
++	int g = 0, k;
+ 
+-	for (g = 0; g < plan->groups; g++, dst += 8)
++	while (g < plan->groups)
+ 	{
+-		const neon_group *grp = &plan->group[g];
+-		const uint8_t *s = src + grp->base;
+-		uint8x16_t q0, q1;
+-		uint8x8x4_t tbl;
+-		uint16x8_t acc;
+-
+-		if (grp->taps == 0)
++		const neon_group *g0 = &plan->group[g];
++		if (g0->taps == 0)
+ 		{
+-			plain_row_to_temp1(dst, src, &weights->index[grp->contrib], 8);
++			plain_row_to_temp1(dst, src, &weights->index[g0->contrib], 8);
++			dst += 8;
++			g++;
+ 			continue;
+ 		}
+-		q0 = vld1q_u8(s);
+-		q1 = vld1q_u8(s + 16);
+-		tbl.val[0] = vget_low_u8(q0);
+-		tbl.val[1] = vget_high_u8(q0);
+-		tbl.val[2] = vget_low_u8(q1);
+-		tbl.val[3] = vget_high_u8(q1);
+-		acc = vdupq_n_u16(128);
+-		if (grp->wide)
+-			for (k = 0; k < grp->taps; k++)
+-				acc = vmlaq_u16(acc, vmovl_u8(vtbl4_u8(tbl, vld1_u8(grp->idx[k]))), vld1q_u16(grp->w16[k]));
++		if (g + 1 < plan->groups && g0[1].taps == g0->taps)
++		{
++			/* Two groups with the same number of weights side by side. */
++			uint8x8x4_t t0 = neon_window(src + g0[0].base), t1 = neon_window(src + g0[1].base);
++			uint16x8_t a0 = vdupq_n_u16(128), a1 = a0;
++			const uint8_t *d1 = d + 16 * g0->taps;
++			for (k = 0; k < g0->taps; k++)
++			{
++				uint8x16_t w0 = vld1q_u8(d + 16 * k), w1 = vld1q_u8(d1 + 16 * k);
++				a0 = vmlal_u8(a0, vtbl4_u8(t0, vget_low_u8(w0)), vget_high_u8(w0));
++				a1 = vmlal_u8(a1, vtbl4_u8(t1, vget_low_u8(w1)), vget_high_u8(w1));
++			}
++			vst1q_u8(dst, vcombine_u8(vshrn_n_u16(a0, 8), vshrn_n_u16(a1, 8)));
++			d = d1 + 16 * g0->taps;
++			dst += 16;
++			g += 2;
++		}
+ 		else
+-			for (k = 0; k < grp->taps; k++)
+-				acc = vmlal_u8(acc, vtbl4_u8(tbl, vld1_u8(grp->idx[k])), vld1_u8(grp->w8[k]));
+-		vst1_u8(dst, vshrn_n_u16(acc, 8));
++		{
++			uint8x8x4_t t0 = neon_window(src + g0->base);
++			uint16x8_t a0 = vdupq_n_u16(128);
++			for (k = 0; k < g0->taps; k++, d += 16)
++			{
++				uint8x16_t w0 = vld1q_u8(d);
++				a0 = vmlal_u8(a0, vtbl4_u8(t0, vget_low_u8(w0)), vget_high_u8(w0));
++			}
++			vst1_u8(dst, vshrn_n_u16(a0, 8));
++			dst += 8;
++			g++;
++		}
+ 	}
+ 	plain_row_to_temp1(dst, src, &weights->index[plan->tail_contrib], weights->count - 8 * plan->groups);
+ }
+@@ -1502,7 +1545,22 @@
+ 		scale_row_from_temp(dst, src, weights, w, n, row);
+ 		return;
+ 	}
+-	for (x = 0; x + 16 <= width; x += 16)
++	for (x = 0; x + 32 <= width; x += 32)
++	{
++		uint16x8_t a0 = vdupq_n_u16(128), a1 = a0, a2 = a0, a3 = a0;
++		for (k = 0; k < nz; k++)
++		{
++			uint8x16_t v0 = vld1q_u8(rows[k] + x), v1 = vld1q_u8(rows[k] + x + 16);
++			uint8x8_t wv = vdup_n_u8(wk[k]);
++			a0 = vmlal_u8(a0, vget_low_u8(v0), wv);
++			a1 = vmlal_u8(a1, vget_high_u8(v0), wv);
++			a2 = vmlal_u8(a2, vget_low_u8(v1), wv);
++			a3 = vmlal_u8(a3, vget_high_u8(v1), wv);
++		}
++		vst1q_u8(dst + x, vcombine_u8(vshrn_n_u16(a0, 8), vshrn_n_u16(a1, 8)));
++		vst1q_u8(dst + x + 16, vcombine_u8(vshrn_n_u16(a2, 8), vshrn_n_u16(a3, 8)));
++	}
++	for (; x + 16 <= width; x += 16)
+ 	{
+ 		uint16x8_t lo = vdupq_n_u16(128), hi = lo;
+ 		for (k = 0; k < nz; k++)
+@@ -2097,7 +2155,7 @@
+ 		}
+ 		fz_free(ctx, temp);
+ #ifdef WASHI_NEON_SCALE
+-		fz_free(ctx, plan);
++		neon_plan_free(ctx, plan);
+ #endif
+ 
+ 		if (forcealpha)
+--- a/source/fitz/pixmap.c
++++ b/source/fitz/pixmap.c
+@@ -1825,6 +1825,93 @@
+ 	tile->samples = fz_realloc(ctx, tile->samples, (size_t)tile->h * tile->w * tile->n);
+ }
+ 
++#if defined(ARCH_ARM) && ARCH_HAS_NEON
++#include <arm_neon.h>
++extern int fz_washi_neon;
++
++/* washi: fz_subsample_pixmap_ARM for one component and f = 2 or 4 with NEON:
++ * full f x f blocks are summed pairwise and shifted, exactly as the asm does;
++ * the stray column and row are divided as there (v * (65536 / count)) >> 16. */
++static int
++neon_subsample_gray(unsigned char *s, int w, int h, int factor, ptrdiff_t stride)
++{
++	int f = 1 << factor, shift = 2 * factor;
++	int ow = w / f, sx = w % f, sy = h % f;
++	unsigned char *d = s;
++	int x, y, xx, yy;
++
++	if (factor != 1 && factor != 2)
++		return 0;
++	for (y = 0; y + f <= h; y += f)
++	{
++		const unsigned char *r = s + (size_t)y * stride;
++		x = 0;
++		if (f == 2)
++			for (; x + 16 <= ow; x += 16)
++			{
++				const unsigned char *a = r + 2 * x, *b = a + stride;
++				uint8x16_t a0 = vld1q_u8(a), a1 = vld1q_u8(a + 16);
++				uint8x16_t b0 = vld1q_u8(b), b1 = vld1q_u8(b + 16);
++				uint16x8_t s0 = vaddq_u16(vpaddlq_u8(a0), vpaddlq_u8(b0));
++				uint16x8_t s1 = vaddq_u16(vpaddlq_u8(a1), vpaddlq_u8(b1));
++				vst1q_u8(d + x, vcombine_u8(vshrn_n_u16(s0, 2), vshrn_n_u16(s1, 2)));
++			}
++		else
++			for (; x + 8 <= ow; x += 8)
++			{
++				const unsigned char *a = r + 4 * x;
++				uint16x8_t p0 = vdupq_n_u16(0), p1 = p0;
++				for (yy = 0; yy < 4; yy++, a += stride)
++				{
++					p0 = vaddq_u16(p0, vpaddlq_u8(vld1q_u8(a)));
++					p1 = vaddq_u16(p1, vpaddlq_u8(vld1q_u8(a + 16)));
++				}
++				p0 = vcombine_u16(vpadd_u16(vget_low_u16(p0), vget_high_u16(p0)),
++						vpadd_u16(vget_low_u16(p1), vget_high_u16(p1)));
++				vst1_u8(d + x, vshrn_n_u16(p0, 4));
++			}
++		for (; x < ow; x++)
++		{
++			int v = 0;
++			for (yy = 0; yy < f; yy++)
++				for (xx = 0; xx < f; xx++)
++					v += r[yy * stride + x * f + xx];
++			d[x] = v >> shift;
++		}
++		if (sx)
++		{
++			int v = 0;
++			for (yy = 0; yy < f; yy++)
++				for (xx = 0; xx < sx; xx++)
++					v += r[yy * stride + ow * f + xx];
++			d[ow] = (v * (65536 / (sx * f))) >> 16;
++		}
++		d += ow + (sx != 0);
++	}
++	if (sy)
++	{
++		const unsigned char *r = s + (size_t)y * stride;
++		for (x = 0; x < ow; x++)
++		{
++			int v = 0;
++			for (yy = 0; yy < sy; yy++)
++				for (xx = 0; xx < f; xx++)
++					v += r[yy * stride + x * f + xx];
++			d[x] = (v * (65536 / (sy * f))) >> 16;
++		}
++		if (sx)
++		{
++			int v = 0;
++			for (yy = 0; yy < sy; yy++)
++				for (xx = 0; xx < sx; xx++)
++					v += r[yy * stride + ow * f + xx];
++			d[ow] = (v * (65536 / (sx * sy))) >> 16;
++		}
++	}
++	return 1;
++}
++#endif
++
+ void
+ fz_subsample_pixblock(unsigned char *s, int w, int h, int n, int factor, ptrdiff_t stride)
+ {
+@@ -1843,6 +1930,10 @@
+ 	fwd3 = (f-1)*fwd + (int)stride - w * n;
+ 	factor *= 2;
+ #ifdef ARCH_ARM
++#if ARCH_HAS_NEON
++	if (fz_washi_neon && n == 1 && neon_subsample_gray(s, w, h, factor / 2, stride))
++		return;
++#endif
+ 	{
+ 		int strayX = w%f;
+ 		int divX = (strayX ? 65536/(strayX*f) : 0);

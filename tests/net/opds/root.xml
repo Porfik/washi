@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:os="http://a9.com/-/spec/opensearch/1.1/">
+  <id>urn:washi:test:root</id>
+  <title>Тестовый каталог</title>
+  <updated>2026-11-24T12:00:00Z</updated>
+  <link rel="self" href="./" type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="start" href="./" type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  <link rel="search" href="search?q={searchTerms}" type="application/atom+xml"/>
+  <entry>
+    <title>Новинки</title>
+    <id>urn:washi:test:new</id>
+    <updated>2026-11-24T12:00:00Z</updated>
+    <content type="text">Свежие поступления: 14 книг на двух страницах</content>
+    <link rel="http://opds-spec.org/sort/new" href="new" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  </entry>
+  <entry>
+    <title>Разделы</title>
+    <id>urn:washi:test:genres</id>
+    <updated>2026-11-24T12:00:00Z</updated>
+    <content type="text">Художественная литература и наука</content>
+    <link href="genres" type="application/atom+xml;profile=opds-catalog;kind=navigation"/>
+  </entry>
+  <entry>
+    <title>Пустой раздел</title>
+    <id>urn:washi:test:empty</id>
+    <content type="text">Здесь пока нет книг</content>
+    <link rel="subsection" href="empty" type="application/atom+xml;profile=opds-catalog"/>
+  </entry>
+  <entry>
+    <title>Длинные названия и форматы</title>
+    <id>urn:washi:test:long</id>
+    <content type="text">Названия в две строки, много форматов, формат без имени</content>
+    <link rel="subsection" href="long" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  </entry>
+</feed>

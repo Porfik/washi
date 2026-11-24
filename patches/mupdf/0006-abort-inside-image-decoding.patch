@@ -1,0 +1,304 @@
+--- a/source/fitz/image-imp.h
++++ b/source/fitz/image-imp.h
+@@ -23,6 +23,10 @@
+ #ifndef FITZ_IMAGE_IMP_H
+ #define FITZ_IMAGE_IMP_H
+ 
++/* washi: see image.c. */
++extern _Thread_local const int *fz_washi_abort;
++int fz_washi_aborted(void);
++
+ fz_pixmap *fz_load_jpeg(fz_context *ctx, const unsigned char *data, size_t size);
+ fz_pixmap *fz_load_png(fz_context *ctx, const unsigned char *data, size_t size);
+ fz_pixmap *fz_load_psd(fz_context *ctx, const unsigned char *data, size_t size);
+--- a/source/fitz/image.c
++++ b/source/fitz/image.c
+@@ -617,6 +617,17 @@
+ /* washi: see fz_get_pixmap_from_image. 100 — off. */
+ int fz_washi_jpx_min_scale = 100;
+ 
++/* washi: a render thread points this at its cookie's abort flag. Image
++ * decoding then stops soon after the flag is set (FZ_ERROR_ABORT), and a tile
++ * that a decoder cut short is never stored. NULL — decode to the end. */
++_Thread_local const int *fz_washi_abort = NULL;
++
++int
++fz_washi_aborted(void)
++{
++	return fz_washi_abort != NULL && *(const volatile int *)fz_washi_abort != 0;
++}
++
+ /* washi: subsample a 1-bit, 1-component image straight from its packed
+  * rows, instead of unpacking it to 8 bits and subsampling that. Gives the
+  * same samples as fz_unpack_stream + subsample_stream (+ the image mask
+@@ -674,6 +685,8 @@
+ 			unsigned char *d = tile->samples + (size_t)oy * tile->stride;
+ 			int ox, r;
+ 
++			if (fz_washi_aborted())
++				fz_throw(ctx, FZ_ERROR_ABORT, "image decoding aborted");
+ 			if (len < row * fh)
+ 			{
+ 				if (!warned)
+@@ -874,7 +887,16 @@
+ 		samples = tile->samples;
+ 		stride = tile->stride;
+ 
+-		len = fz_read(ctx, read_stream, samples, h * stride);
++		/* washi: in pieces, to notice an abort while decoding. */
++		for (len = 0; len < h * stride; )
++		{
++			size_t n = fz_read(ctx, read_stream, samples + len, fz_minz(h * stride - len, 1 << 18));
++			if (fz_washi_aborted())
++				fz_throw(ctx, FZ_ERROR_ABORT, "image decoding aborted");
++			if (n == 0)
++				break;
++			len += n;
++		}
+ 
+ 		/* Pad truncated images */
+ 		if (len < stride * h)
+@@ -1310,6 +1332,13 @@
+ 		}
+ 	}
+ 
++	/* washi: a decoder stopped by an abort may have returned a cut-short tile. */
++	if (fz_washi_aborted())
++	{
++		fz_drop_pixmap(ctx, tile);
++		fz_throw(ctx, FZ_ERROR_ABORT, "image decoding aborted");
++	}
++
+ 	fz_try(ctx)
+ 	{
+ 		fz_pixmap *existing_tile;
+--- a/source/fitz/filter-jbig2.c
++++ b/source/fitz/filter-jbig2.c
+@@ -22,6 +22,8 @@
+ 
+ #include "mupdf/fitz.h"
+ 
++#include "image-imp.h"
++
+ #include <jbig2.h>
+ 
+ #include <string.h>
+@@ -103,7 +105,13 @@
+ 				break;
+ 
+ 			if (jbig2_data_in(state->ctx, tmp, n) < 0)
++			{
++				/* washi: stopped by an abort, not a broken image; the cut-short
++				 * image is thrown away by the reader of this stream. */
++				if (fz_washi_aborted())
++					return EOF;
+ 				fz_throw(ctx, FZ_ERROR_LIBRARY, "cannot decode jbig2 image");
++			}
+ 		}
+ 
+ 		if (jbig2_complete_page(state->ctx) < 0)
+@@ -258,6 +266,9 @@
+ 		fz_free(ctx, state);
+ 		fz_throw(ctx, FZ_ERROR_LIBRARY, "cannot allocate jbig2 context");
+ 	}
++	/* washi: stop on abort (see fz_washi_abort). Only the image itself: the
++	 * globals are decoded to the end, as they are stored and shared by other pages. */
++	jbig2_ctx_set_abort(state->ctx, fz_washi_abort);
+ 
+ 	state->page = NULL;
+ 	state->idx = 0;
+--- a/thirdparty/jbig2dec/jbig2.h
++++ b/thirdparty/jbig2dec/jbig2.h
+@@ -91,6 +91,10 @@
+                         int jbig2_version_minor);
+ Jbig2Allocator *jbig2_ctx_free(Jbig2Ctx *ctx);
+ 
++/* washi: stop decoding with a fatal error once *abort becomes non-zero (it may be
++   set from another thread). NULL, the default, never stops. */
++void jbig2_ctx_set_abort(Jbig2Ctx *ctx, const int *abort);
++
+ /* global context for embedded streams */
+ Jbig2GlobalCtx *jbig2_make_global_ctx(Jbig2Ctx *ctx);
+ Jbig2Allocator *jbig2_global_ctx_free(Jbig2GlobalCtx *global_ctx);
+--- a/thirdparty/jbig2dec/jbig2_priv.h
++++ b/thirdparty/jbig2dec/jbig2_priv.h
+@@ -121,8 +121,12 @@
+     uint32_t current_page;
+     uint32_t max_page_index;
+     Jbig2Page *pages;
++
++    const volatile int *washi_abort; /* see jbig2_ctx_set_abort */
+ };
+ 
++#define jbig2_aborted(ctx) ((ctx)->washi_abort != NULL && *(ctx)->washi_abort != 0)
++
+ uint32_t jbig2_get_uint32(const byte *bptr);
+ 
+ int32_t jbig2_get_int32(const byte *buf);
+--- a/thirdparty/jbig2dec/jbig2.c
++++ b/thirdparty/jbig2dec/jbig2.c
+@@ -139,6 +139,7 @@
+     result->state = (options & JBIG2_OPTIONS_EMBEDDED) ? JBIG2_FILE_HEADER_MAYBE : JBIG2_FILE_HEADER;
+ 
+     result->buf = NULL;
++    result->washi_abort = NULL;
+ 
+     result->n_segments = 0;
+     result->n_segments_max = 16;
+@@ -453,6 +454,12 @@
+     }
+ }
+ 
++void
++jbig2_ctx_set_abort(Jbig2Ctx *ctx, const int *abort)
++{
++    ctx->washi_abort = abort;
++}
++
+ Jbig2Allocator *
+ jbig2_ctx_free(Jbig2Ctx *ctx)
+ {
+--- a/thirdparty/jbig2dec/jbig2_generic.c
++++ b/thirdparty/jbig2dec/jbig2_generic.c
+@@ -392,6 +392,8 @@
+         return 0;
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         uint32_t CONTEXT;
+         uint32_t line_m1;
+         uint32_t line_m2;
+@@ -528,6 +530,8 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         uint32_t out_byte = 0;
+         int out_bits_to_go_in_byte = 8;
+         uint8_t *d = &image->data[image->stride * y];
+@@ -600,6 +604,8 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         uint32_t out_byte = 0;
+         int out_bits_to_go_in_byte = 8;
+         uint8_t *d = &image->data[image->stride * y];
+@@ -677,6 +683,8 @@
+         return 0;
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         uint32_t CONTEXT;
+         uint32_t line_m1;
+         uint32_t line_m2;
+@@ -737,6 +745,8 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         uint32_t out_byte = 0;
+         int out_bits_to_go_in_byte = 8;
+         uint8_t *d = &image->data[image->stride * y];
+@@ -813,6 +823,8 @@
+         return 0;
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         uint32_t CONTEXT;
+         uint32_t line_m1;
+         uint32_t line_m2;
+@@ -881,6 +893,8 @@
+         return 0;
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         uint32_t CONTEXT;
+         uint32_t line_m1;
+         int64_t padded_width = (GBW + 7) & -8;
+@@ -935,6 +949,8 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         uint32_t out_byte = 0;
+         int out_bits_to_go_in_byte = 8;
+         uint8_t *d = &image->data[image->stride * y];
+@@ -1017,6 +1033,8 @@
+         params->gbat[6] == -2 && params->gbat[7] == -2)
+     {
+         for (y = 0; y < GBH; y++) {
++            if (jbig2_aborted(ctx))
++                return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+             int bit = jbig2_arith_decode(ctx, as, &GB_stats[0x9B25]);
+             if (bit < 0)
+                 return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, segment->number, "failed to decode arithmetic code when handling generic template0 TPGDON1");
+@@ -1115,6 +1133,8 @@
+     /* So 0 <= y < top needs bounds checking. */
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         int bit = jbig2_arith_decode(ctx, as, &GB_stats[0x9B25]);
+         if (bit < 0)
+             return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, segment->number, "failed to decode arithmetic code when handling generic template0 TPGDON1");
+@@ -1203,6 +1223,8 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         int bit = jbig2_arith_decode(ctx, as, &GB_stats[0x0795]);
+         if (bit < 0)
+             return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, segment->number, "failed to decode arithmetic code when handling generic template1 TPGDON1");
+@@ -1278,6 +1300,8 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         int bit = jbig2_arith_decode(ctx, as, &GB_stats[0xE5]);
+         if (bit < 0)
+             return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, segment->number, "failed to decode arithmetic code when handling generic template2 TPGDON1");
+@@ -1353,6 +1377,8 @@
+                            "adaptive template pixel is out of field");
+ 
+     for (y = 0; y < GBH; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         int bit = jbig2_arith_decode(ctx, as, &GB_stats[0x0195]);
+         if (bit < 0)
+             return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, segment->number, "failed to decode arithmetic code when handling generic template3 TPGDON1");
+--- a/thirdparty/jbig2dec/jbig2_mmr.c
++++ b/thirdparty/jbig2dec/jbig2_mmr.c
+@@ -1218,6 +1218,8 @@
+     jbig2_decode_mmr_init(&mmr, image->width, image->height, data, size);
+ 
+     for (y = 0; !eofb && y < image->height; y++) {
++        if (jbig2_aborted(ctx))
++            return jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
+         memset(dst, 0, rowstride);
+         code = jbig2_decode_mmr_line(ctx, &mmr, ref, dst, &eofb);
+         if (code < 0)
+--- a/thirdparty/jbig2dec/jbig2_symbol_dict.c
++++ b/thirdparty/jbig2dec/jbig2_symbol_dict.c
+@@ -417,6 +417,11 @@
+         jbig2_error(ctx, JBIG2_SEVERITY_DEBUG, segment->number, "decoding height class %d with %d syms decoded", HCHEIGHT, NSYMSDECODED);
+ 
+         for (;;) {
++            if (jbig2_aborted(ctx)) {
++                code = jbig2_error(ctx, JBIG2_SEVERITY_FATAL, segment->number, "decoding aborted");
++                goto cleanup;
++            }
++
+             /* 6.5.7 */
+             if (params->SDHUFF) {
+                 DW = jbig2_huffman_get(hs, params->SDHUFFDW, &code);

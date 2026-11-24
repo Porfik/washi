@@ -1,0 +1,168 @@
+--- a/source/fitz/draw-device.c
++++ b/source/fitz/draw-device.c
+@@ -65,8 +65,18 @@
+ 	fz_rect area;
+ 	int flags;
+ 	int in_smask;
++	/* washi: a clip path whose mask is made only when the clip is popped (see
++	 * fz_draw_clip_path); NULL otherwise. Owned by this stack entry. */
++	fz_path *lazy_path;
++	fz_matrix lazy_ctm;
++	fz_irect lazy_scissor; /* the rasterizer clip it was flattened with */
++	float lazy_flatness;
++	int lazy_even_odd;
+ } fz_draw_state;
+ 
++/* washi: see fz_draw_clip_path. 0 — as MuPDF. */
++int fz_washi_lazy_clip = 1;
++
+ typedef struct fz_draw_device
+ {
+ 	fz_device super;
+@@ -199,6 +209,7 @@
+ 	state = &dev->stack[dev->top];
+ 	dev->top++;
+ 	memcpy(&state[1], state, sizeof(*state));
++	state[1].lazy_path = NULL;
+ 	STACK_PUSHED(message);
+ 	return state;
+ }
+@@ -876,6 +887,7 @@
+ 	fz_irect bbox;
+ 	fz_draw_state *state = &dev->stack[dev->top];
+ 	fz_colorspace *model;
++	fz_irect lazy_scissor;
+ 
+ 	if (dev->top == 0 && dev->resolve_spots)
+ 		state = push_group_for_separations(ctx, dev, fz_default_color_params /* FIXME */, dev->default_cs);
+@@ -894,6 +906,7 @@
+ 	if (!fz_is_infinite_rect(scissor))
+ 		bbox = fz_intersect_irect(bbox, fz_irect_from_rect(fz_transform_rect(scissor, dev->transform)));
+ 
++	lazy_scissor = bbox;
+ 	if (fz_flatten_fill_path(ctx, rast, path, ctm, flatness, bbox, &bbox) || fz_is_rect_rasterizer(ctx, rast))
+ 	{
+ 		state[1].scissor = bbox;
+@@ -904,6 +917,26 @@
+ 		return;
+ 	}
+ 
++	/* washi: the mask is only used when the clip is popped, to blend what was
++	 * drawn meanwhile onto the backdrop; and where nothing was drawn the blend
++	 * changes nothing. So keep the path, and at the pop make the mask only for
++	 * the area that was drawn to (often small, while the clip is the whole page:
++	 * "page minus link rectangles" in PDFs printed from browsers). */
++	if (fz_washi_lazy_clip && !state[1].shape && !state[1].group_alpha)
++	{
++		state[1].dest = fz_new_pixmap_with_bbox(ctx, model, bbox, state[0].dest->seps, state[0].dest->alpha);
++		fz_copy_pixmap_rect(ctx, state[1].dest, state[0].dest, bbox, dev->default_cs);
++		state[1].mask = NULL;
++		/* A copy: the path may be packed (display lists) and not ours to keep. */
++		state[1].lazy_path = fz_clone_path(ctx, (fz_path *)path);
++		state[1].lazy_ctm = ctm;
++		state[1].lazy_scissor = lazy_scissor;
++		state[1].lazy_flatness = flatness;
++		state[1].lazy_even_odd = even_odd;
++		state[1].scissor = bbox;
++		return;
++	}
++
+ 	state[1].mask = fz_new_pixmap_with_bbox(ctx, NULL, bbox, NULL, 1);
+ 	fz_clear_pixmap(ctx, state[1].mask);
+ 	state[1].dest = fz_new_pixmap_with_bbox(ctx, model, bbox, state[0].dest->seps, state[0].dest->alpha);
+@@ -928,6 +961,74 @@
+ #endif
+ }
+ 
++/* washi: the part of the clip group (a) that differs from the backdrop (b). */
++static fz_irect
++washi_changed_area(const fz_pixmap *a, const fz_pixmap *b)
++{
++	fz_irect r = fz_empty_irect;
++	size_t len = (size_t)a->w * a->n;
++	int y;
++
++	for (y = 0; y < a->h; y++)
++	{
++		const unsigned char *pa = a->samples + (size_t)y * a->stride;
++		const unsigned char *pb = b->samples + (size_t)(a->y - b->y + y) * b->stride + (size_t)(a->x - b->x) * b->n;
++		size_t lo, hi;
++		if (memcmp(pa, pb, len) == 0)
++			continue;
++		for (lo = 0; pa[lo] == pb[lo]; lo++)
++			;
++		for (hi = len; pa[hi - 1] == pb[hi - 1]; hi--)
++			;
++		if (fz_is_empty_irect(r))
++		{
++			r.x0 = a->x + (int)(lo / a->n);
++			r.x1 = a->x + (int)((hi + a->n - 1) / a->n);
++			r.y0 = a->y + y;
++		}
++		else
++		{
++			r.x0 = fz_mini(r.x0, a->x + (int)(lo / a->n));
++			r.x1 = fz_maxi(r.x1, a->x + (int)((hi + a->n - 1) / a->n));
++		}
++		r.y1 = a->y + y + 1;
++	}
++	return r;
++}
++
++/* washi: pop of a clip from fz_draw_clip_path with a kept path: the mask
++ * made and applied only where the group was drawn to. The path is flattened
++ * with the same clip as MuPDF would have, so the coverage is the same; the
++ * scan conversion is then limited to the (smaller) mask pixmap. */
++static void
++washi_pop_lazy_clip(fz_context *ctx, fz_draw_device *dev, fz_draw_state *state)
++{
++	fz_pixmap *mask = NULL;
++
++	fz_var(mask);
++	fz_try(ctx)
++	{
++		fz_irect area = washi_changed_area(state[1].dest, state[0].dest);
++		if (!fz_is_empty_irect(area) &&
++			!fz_flatten_fill_path(ctx, dev->rast, state[1].lazy_path, state[1].lazy_ctm, state[1].lazy_flatness, state[1].lazy_scissor, NULL))
++		{
++			mask = fz_new_pixmap_with_bbox(ctx, NULL, area, NULL, 1);
++			fz_clear_pixmap(ctx, mask);
++			fz_convert_rasterizer(ctx, dev->rast, state[1].lazy_even_odd, mask, NULL, 0);
++			fz_paint_pixmap_with_mask(state[0].dest, state[1].dest, mask);
++		}
++	}
++	fz_always(ctx)
++	{
++		fz_drop_pixmap(ctx, mask);
++		fz_drop_path(ctx, state[1].lazy_path);
++		state[1].lazy_path = NULL;
++		cleanup_post_pop(ctx, state);
++	}
++	fz_catch(ctx)
++		fz_rethrow(ctx);
++}
++
+ static void
+ fz_draw_clip_stroke_path(fz_context *ctx, fz_device *devp, const fz_path *path, const fz_stroke_state *stroke, fz_matrix in_ctm, fz_rect scissor)
+ {
+@@ -2298,6 +2399,12 @@
+ 
+ 	state = pop_stack(ctx, dev, "clip");
+ 
++	if (state[1].lazy_path)
++	{
++		washi_pop_lazy_clip(ctx, dev, state);
++		return;
++	}
++
+ 	/* We can get here with state[1].mask == NULL if the clipping actually
+ 	 * resolved to a rectangle earlier.
+ 	 */
+@@ -3265,6 +3372,7 @@
+ 	for (; dev->top > 0; dev->top--)
+ 	{
+ 		fz_draw_state *state = &dev->stack[dev->top - 1];
++		fz_drop_path(ctx, state[1].lazy_path);
+ 		if (state[1].mask != state[0].mask)
+ 			fz_drop_pixmap(ctx, state[1].mask);
+ 		if (state[1].dest != state[0].dest)

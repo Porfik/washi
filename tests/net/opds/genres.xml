@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<atom:feed xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <atom:id>urn:washi:test:genres</atom:id>
+  <atom:title>Разделы</atom:title>
+  <atom:link rel="search" href="osd.xml" type="application/opensearchdescription+xml"/>
+  <atom:entry>
+    <atom:title>Проза</atom:title>
+    <dc:title>НЕ ДОЛЖНО ПОПАСТЬ</dc:title>
+    <atom:id>urn:g:prose</atom:id>
+    <atom:summary>Романы и повести</atom:summary>
+    <atom:link rel="subsection" href="new" type="application/atom+xml"/>
+  </atom:entry>
+  <atom:entry>
+    <atom:title>Наука</atom:title>
+    <atom:id>urn:g:science</atom:id>
+    <atom:link href="new2" type="application/atom+xml;profile=opds-catalog"/>
+  </atom:entry>
+</atom:feed>

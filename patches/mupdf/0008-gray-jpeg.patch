@@ -1,0 +1,126 @@
+--- a/source/fitz/image-imp.h
++++ b/source/fitz/image-imp.h
+@@ -26,6 +26,7 @@
+ /* washi: see image.c. */
+ extern _Thread_local const int *fz_washi_abort;
+ int fz_washi_aborted(void);
++extern _Thread_local int fz_washi_dct_gray;
+ 
+ fz_pixmap *fz_load_jpeg(fz_context *ctx, const unsigned char *data, size_t size);
+ fz_pixmap *fz_load_png(fz_context *ctx, const unsigned char *data, size_t size);
+--- a/source/fitz/image.c
++++ b/source/fitz/image.c
+@@ -1002,6 +1002,20 @@
+ 	return 0;
+ }
+ 
++/* washi: decode colour (RGB) JPEGs to gray straight away — the JPEG's own luma
++ * instead of RGB converted to gray afterwards. Only for a gray destination, which the
++ * reader always has; the result differs from MuPDF's by rounding. 0 — off. */
++int fz_washi_gray_jpeg = 0;
++
++static int
++washi_jpeg_to_gray(fz_context *ctx, const fz_compressed_image *image)
++{
++	const fz_image *im = &image->super;
++	return fz_washi_gray_jpeg && image->buffer->params.type == FZ_IMAGE_JPEG &&
++		im->n == 3 && im->bpc == 8 && !im->imagemask && !im->use_colorkey && !im->use_decode &&
++		im->colorspace && fz_colorspace_type(ctx, im->colorspace) == FZ_COLORSPACE_RGB;
++}
++
+ static fz_pixmap *
+ compressed_image_get_pixmap(fz_context *ctx, fz_image *image_, fz_irect *subarea, int w, int h, int *l2factor)
+ {
+@@ -1012,6 +1026,7 @@
+ 	fz_pixmap *tile;
+ 	int can_sub = 0;
+ 	int local_l2factor;
++	int gray = 0;
+ 
+ 	/* If we are using matte, then the decode code requires both image and tile sizes
+ 	 * to match. The simplest way to ensure this is to do no native l2factor decoding.
+@@ -1114,14 +1129,32 @@
+ 
+ 	default:
+ 		native_l2factor = l2factor ? *l2factor : 0;
+-		stm = fz_open_image_decomp_stream_from_buffer(ctx, image->buffer, l2factor);
++		gray = washi_jpeg_to_gray(ctx, image);
++		stm = NULL;
++		fz_var(stm);
++		fz_washi_dct_gray = gray;
++		fz_try(ctx)
++			stm = fz_open_image_decomp_stream_from_buffer(ctx, image->buffer, l2factor);
++		fz_always(ctx)
++			fz_washi_dct_gray = 0;
++		fz_catch(ctx)
++			fz_rethrow(ctx);
+ 		fz_try(ctx)
+ 		{
+ 			if (l2factor)
+ 				native_l2factor -= *l2factor;
+ 			indexed = fz_colorspace_is_indexed(ctx, image->super.colorspace);
+ 			can_sub = 1;
+-			tile = fz_decomp_image_from_stream(ctx, stm, image, subarea, indexed, native_l2factor, l2factor);
++			if (gray)
++			{
++				/* The same image, but one gray component per sample. */
++				fz_compressed_image g = *image;
++				g.super.colorspace = fz_device_gray(ctx);
++				g.super.n = 1;
++				tile = fz_decomp_image_from_stream(ctx, stm, &g, subarea, 0, native_l2factor, l2factor);
++			}
++			else
++				tile = fz_decomp_image_from_stream(ctx, stm, image, subarea, indexed, native_l2factor, l2factor);
+ 		}
+ 		fz_always(ctx)
+ 			fz_drop_stream(ctx, stm);
+--- a/source/fitz/filter-dct.c
++++ b/source/fitz/filter-dct.c
+@@ -22,6 +22,8 @@
+ 
+ #include "mupdf/fitz.h"
+ 
++#include "image-imp.h"
++
+ #include <stdio.h>
+ #include <jpeglib.h>
+ 
+@@ -41,6 +43,7 @@
+ 	int init;
+ 	int stride;
+ 	int l2factor;
++	int gray; /* washi: see fz_washi_dct_gray */
+ 	unsigned char *scanline;
+ 	unsigned char *rp, *wp;
+ 	struct jpeg_decompress_struct cinfo;
+@@ -278,6 +281,11 @@
+ 					cinfo->jpeg_color_space = JCS_CMYK;
+ 			}
+ 
++			/* washi: only the luma of a colour JPEG; libjpeg then skips the
++			 * chroma components altogether (no IDCT, upsampling, conversion). */
++			if (state->gray && cinfo->num_components == 3)
++				cinfo->out_color_space = JCS_GRAYSCALE;
++
+ 			cinfo->scale_num = 8/(1<<state->l2factor);
+ 			cinfo->scale_denom = 8;
+ 
+@@ -376,6 +384,10 @@
+ 	fz_free(ctx, state);
+ }
+ 
++/* washi: set (for this thread) while opening a stream whose 3 component JPEG
++ * should come out as 1 component gray; see compressed_image_get_pixmap. */
++_Thread_local int fz_washi_dct_gray = 0;
++
+ fz_stream *
+ fz_open_dctd(fz_context *ctx, fz_stream *chain, int color_transform, int invert_cmyk, int l2factor, fz_stream *jpegtables)
+ {
+@@ -396,6 +408,7 @@
+ 	state->invert_cmyk = invert_cmyk;
+ 	state->init = 0;
+ 	state->l2factor = l2factor;
++	state->gray = fz_washi_dct_gray;
+ 	state->chain = fz_keep_stream(ctx, chain);
+ 	state->jpegtables = fz_keep_stream(ctx, jpegtables);
+ 	state->curr_stm = state->chain;

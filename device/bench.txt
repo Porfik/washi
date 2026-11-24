@@ -1,0 +1,22 @@
+# washi-bench (/mnt/ext1/washi/bench.txt): по строке на прогон, результат — в bench-log.txt.
+#   СТРАНИЦЫ [опции bench] [bin=ИМЯ] | путь к PDF
+#   screen СТР1,СТР2 | путь — тест экрана: две страницы во всех режимах обновления e-ink
+#   shell | путь.sh — скрипт оболочки, вывод в лог
+# Опции: --compare ФЛАГ (A/B в одном запуске со сверкой пикселей), --prof ФАЙЛ (профиль),
+# --abort-after МС (отмена), см. washi --bench без аргументов.
+#
+#
+# Разведка для хаба: процессы, шрифты, программы прошивки (~3 мин) → washi/probe/.
+# shell | /mnt/ext1/washi/probe.sh
+# Шрифты Roboto и PT для разработки хаба на ПК (несколько секунд) → washi/probe/fonts/.
+shell | /mnt/ext1/washi/fonts.sh
+#
+# Замер: по строке на книгу — страницы через запятую (обычно 11, равномерно по книге).
+# 22,45,68,91,113,136,159,182,204,227,250 --no-icc --jpx-min 70 | /mnt/ext1/Books/text.pdf
+# 36,72,108,144,180,216,252,288,324,360,396 --no-icc --jpx-min 70 | /mnt/ext1/Books/scan.pdf
+# 42,84,126,168,210,253,295,337,379,421,463 --no-icc --jpx-min 70 | /mnt/ext1/Books/djvu-to-pdf.pdf
+#
+# Тест экрана: текст, манга, скан с фото.
+# screen 20,21 | /mnt/ext1/Books/text.pdf
+# screen 34,35 | /mnt/ext1/Books/manga.pdf
+# screen 7,13 | /mnt/ext1/Books/scan.pdf

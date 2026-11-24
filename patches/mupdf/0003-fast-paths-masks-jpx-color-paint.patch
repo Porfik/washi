@@ -1,0 +1,587 @@
+--- a/source/fitz/load-jpx.c
++++ b/source/fitz/load-jpx.c
+@@ -363,6 +363,55 @@
+ 	}
+ }
+ 
++/* washi: the usual case of template_copy_comp — a full-size component that
++ * covers the whole image — without the per-sample clipping. Same output.
++ * Can be switched off for comparison. */
++int fz_washi_jpx_fast_copy = 1;
++
++static void
++copy_comp_whole(unsigned char *dst, int w, int h, int stride, const OPJ_INT32 *src, OPJ_UINT32 sgnd, OPJ_UINT32 prec, int comps)
++{
++	OPJ_INT32 bias = sgnd ? 1 << (prec - 1) : 0;
++	int x, y;
++
++	for (y = 0; y < h; y++)
++	{
++		unsigned char *d = dst;
++		if (prec > 8)
++		{
++			int shift = prec - 8;
++			for (x = 0; x < w; x++, d += comps)
++				*d = (src[x] + bias) >> shift;
++		}
++		else
++		{
++			int shift = 8 - prec;
++			for (x = 0; x < w; x++, d += comps)
++				*d = (src[x] + bias) << shift;
++		}
++		dst += stride;
++		src += w;
++	}
++}
++
++/* washi: every component covers the whole image, so nothing needs clearing first. */
++static int
++jpx_covers_pixmap(fz_pixmap *img, opj_image_t *jpx)
++{
++	int k;
++
++	if (!fz_washi_jpx_fast_copy)
++		return 0;
++	for (k = 0; k < img->n; k++)
++	{
++		opj_image_comp_t *comp = &jpx->comps[k];
++		if (comp->dx != 1 || comp->dy != 1 || comp->x0 != jpx->x0 || comp->y0 != jpx->y0 ||
++			(int)comp->w != img->w || (int)comp->h != img->h)
++			return 0;
++	}
++	return 1;
++}
++
+ static void
+ copy_jpx_to_pixmap(fz_context *ctx, fz_pixmap *img, opj_image_t *jpx)
+ {
+@@ -402,7 +451,9 @@
+ 		(void)safe_mla32(ctx, ch, cdy, oy);
+ 		(void)safe_mla32(ctx, cw, cdx, ox);
+ 
+-		if (cdx == 1 && cdy == 1)
++		if (fz_washi_jpx_fast_copy && cdx == 1 && cdy == 1 && ox == 0 && oy == 0 && (int)cw == w && (int)ch == h)
++			copy_comp_whole(dst0, w, h, stride, comp->data, sgnd, prec, comps);
++		else if (cdx == 1 && cdy == 1)
+ 			template_copy_comp(dst0, w, h, stride, comp->data, ox, oy, 1 /*cdx*/, 1 /*cdy*/, cw, ch, sgnd, prec, comps);
+ 		else
+ 			template_copy_comp(dst0, w, h, stride, comp->data, ox, oy, cdx, cdy, cw, ch, sgnd, prec, comps);
+@@ -673,7 +724,8 @@
+ 	{
+ 		a = !!a; /* ignore any superfluous alpha channels */
+ 		img = fz_new_pixmap(ctx, state->cs, w, h, NULL, a);
+-		fz_clear_pixmap_with_value(ctx, img, 0);
++		if (!jpx_covers_pixmap(img, jpx))
++			fz_clear_pixmap_with_value(ctx, img, 0);
+ 		copy_jpx_to_pixmap(ctx, img, jpx);
+ 
+ 		if (jpx->color_space == OPJ_CLRSPC_SYCC && n == 3 && a == 0)
+--- a/source/fitz/image.c
++++ b/source/fitz/image.c
+@@ -614,6 +614,154 @@
+ 	return fz_new_stream(ctx, state, subsample_next, subsample_drop);
+ }
+ 
++/* washi: subsample a 1-bit, 1-component image straight from its packed
++ * rows, instead of unpacking it to 8 bits and subsampling that. Gives the
++ * same samples as fz_unpack_stream + subsample_stream (+ the image mask
++ * inversion when invert is set). Can be switched off for comparison. */
++int fz_washi_mono_subsample = 1;
++
++static fz_pixmap *
++mono_subsample(fz_context *ctx, fz_stream *stm, fz_colorspace *cs, int alpha, int w, int h, int l2, int invert)
++{
++	int f = 1 << l2;
++	int ow = (w + f - 1) >> l2;
++	int oh = (h + f - 1) >> l2;
++	size_t row = ((size_t)w + 7) >> 3;
++	/* Bits per output sample in one row, and output samples per input byte (l2 <= 3). */
++	int lanes = l2 <= 3 ? 8 >> l2 : 1;
++	int lane_bits = l2 <= 3 ? f : 8;
++	uint32_t lut[256];
++	unsigned char full[64 * 64 + 1];
++	unsigned char *buf = NULL;
++	fz_pixmap *tile = NULL;
++	int warned = 0;
++	int b, i, oy;
++
++	/* lut[byte]: number of 1 bits in each lane of the byte, first lane (high bits) lowest. */
++	for (b = 0; b < 256; b++)
++	{
++		uint32_t v = 0;
++		for (i = 0; i < lanes; i++)
++		{
++			int bits = (b >> (8 - (i + 1) * lane_bits)) & ((1 << lane_bits) - 1);
++			int ones = 0;
++			while (bits)
++				ones += bits & 1, bits >>= 1;
++			v |= (uint32_t)ones << (8 * i);
++		}
++		lut[b] = v;
++	}
++	/* Sample for a full f*f block with a given count of 1 bits (each unpacked to 255). */
++	for (i = 0; i <= f * f; i++)
++	{
++		int v = (255 * i) >> (2 * l2);
++		full[i] = invert ? 255 - v : v;
++	}
++
++	fz_var(buf);
++	fz_var(tile);
++	fz_try(ctx)
++	{
++		buf = fz_malloc(ctx, row * f);
++		tile = fz_new_pixmap(ctx, cs, ow, oh, NULL, alpha);
++		for (oy = 0; oy < oh; oy++)
++		{
++			int fh = fz_mini(f, h - oy * f);
++			size_t len = fz_read(ctx, stm, buf, row * fh);
++			unsigned char *d = tile->samples + (size_t)oy * tile->stride;
++			int ox, r;
++
++			if (len < row * fh)
++			{
++				if (!warned)
++					fz_warn(ctx, "padding truncated image");
++				warned = 1;
++				memset(buf + len, 0, row * fh - len);
++			}
++			/* Bits past the image width are padding, not pixels. */
++			if (w & 7)
++				for (r = 0; r < fh; r++)
++					buf[r * row + row - 1] &= 0xff << (8 - (w & 7));
++
++			ox = 0;
++			if (l2 <= 3 && fh == f)
++			{
++				/* Whole bytes of full blocks: one table lookup per row and byte. */
++				size_t bx, nbytes = (size_t)w >> 3;
++				const unsigned char *r0 = buf, *r1 = buf + row;
++				if (f == 2)
++					for (bx = 0; bx < nbytes; bx++, d += 4)
++					{
++						uint32_t acc = lut[r0[bx]] + lut[r1[bx]];
++						d[0] = full[acc & 0xff];
++						d[1] = full[(acc >> 8) & 0xff];
++						d[2] = full[(acc >> 16) & 0xff];
++						d[3] = full[acc >> 24];
++					}
++				else
++					for (bx = 0; bx < nbytes; bx++)
++					{
++						uint32_t acc = 0;
++						for (r = 0; r < f; r++)
++							acc += lut[buf[r * row + bx]];
++						for (i = 0; i < lanes; i++)
++							*d++ = full[(acc >> (8 * i)) & 0xff];
++					}
++				ox = (int)(nbytes * lanes);
++			}
++			while (ox < ow)
++			{
++				if (l2 <= 3)
++				{
++					size_t bx = ((size_t)ox * f) >> 3;
++					uint32_t acc = 0;
++					for (r = 0; r < fh; r++)
++						acc += lut[buf[r * row + bx]];
++					for (i = 0; i < lanes && ox < ow; i++, ox++)
++					{
++						int ones = (acc >> (8 * i)) & 0xff;
++						int fw = fz_mini(f, w - ox * f);
++						if (fw == f && fh == f)
++							*d++ = full[ones];
++						else
++						{
++							int v = 255 * ones / (fw * fh);
++							*d++ = invert ? 255 - v : v;
++						}
++					}
++				}
++				else
++				{
++					size_t bx = ((size_t)ox * f) >> 3;
++					size_t nb = fz_mini(f, w - ox * f + 7) >> 3;
++					int fw = fz_mini(f, w - ox * f);
++					int ones = 0;
++					size_t k;
++					for (r = 0; r < fh; r++)
++						for (k = 0; k < nb; k++)
++							ones += lut[buf[r * row + bx + k]];
++					if (fw == f && fh == f)
++						*d++ = full[ones];
++					else
++					{
++						int v = 255 * ones / (fw * fh);
++						*d++ = invert ? 255 - v : v;
++					}
++					ox++;
++				}
++			}
++		}
++	}
++	fz_always(ctx)
++		fz_free(ctx, buf);
++	fz_catch(ctx)
++	{
++		fz_drop_pixmap(ctx, tile);
++		fz_rethrow(ctx);
++	}
++	return tile;
++}
++
+ /* l2factor is the amount of subsampling that the decoder is going to be
+  * doing for us already. (So for JPEG 0,1,2,3 corresponding to 1, 2, 4,
+  * 8. For other formats, probably 0.). l2extra is the additional amount
+@@ -633,6 +781,7 @@
+ 	fz_stream *sstream = NULL;
+ 	fz_stream *l2stream = NULL;
+ 	fz_stream *unpstream = NULL;
++	int mono = 0;
+ 
+ 	if (matte)
+ 	{
+@@ -673,6 +822,19 @@
+ 
+ 		if (subarea)
+ 			read_stream = sstream = subarea_stream(ctx, stm, image, subarea, l2factor);
++		if (fz_washi_mono_subsample && image->bpc == 1 && image->n == 1 && !image->use_colorkey &&
++			!indexed && !matte && l2extra && *l2extra)
++		{
++			tile = mono_subsample(ctx, read_stream, image->colorspace, alpha, w, h, *l2extra, image->imagemask);
++			*l2extra = 0;
++			mono = 1;
++			if (image->interpolate & FZ_PIXMAP_FLAG_INTERPOLATE)
++				tile->flags |= FZ_PIXMAP_FLAG_INTERPOLATE;
++			else
++				tile->flags &= ~FZ_PIXMAP_FLAG_INTERPOLATE;
++		}
++		else
++		{
+ 		if (image->bpc != 8 || image->use_colorkey)
+ 			read_stream = unpstream = fz_unpack_stream(ctx, read_stream, image->bpc, w, h, image->n, indexed, image->use_colorkey, 0);
+ 		if (l2extra && *l2extra && !indexed)
+@@ -700,9 +862,10 @@
+ 			fz_warn(ctx, "padding truncated image");
+ 			memset(samples + len, 0, stride * h - len);
+ 		}
++		}
+ 
+-		/* Invert 1-bit image masks */
+-		if (image->imagemask)
++		/* Invert 1-bit image masks (mono_subsample has done it already) */
++		if (image->imagemask && !mono)
+ 		{
+ 			/* 0=opaque and 1=transparent so we need to invert */
+ 			unsigned char *p = samples;
+--- a/source/fitz/draw-device.c
++++ b/source/fitz/draw-device.c
+@@ -1979,6 +1979,88 @@
+ 		fz_rethrow(ctx);
+ }
+ 
++/* washi: scale and paint only the part of an image mask that has content.
++ * Scanned pages often come as several page-sized masks with little on them.
++ * Can be switched off for comparison. */
++int fz_washi_mask_clip = 1;
++
++static int
++row_is_empty(const unsigned char *s, int n)
++{
++	uint32_t v = 0;
++	int i = 0;
++
++	for (; i + 16 <= n; i += 16)
++	{
++		uint32_t w[4];
++		memcpy(w, s + i, 16);
++		v |= w[0] | w[1] | w[2] | w[3];
++		if (v)
++			return 0;
++	}
++	for (; i < n; i++)
++		v |= s[i];
++	return v == 0;
++}
++
++/* Bounding box of the non-zero samples of a 1-component mask; 0 if there are none. */
++static int
++mask_content_bbox(const fz_pixmap *pix, fz_irect *bbox)
++{
++	const unsigned char *s = pix->samples;
++	ptrdiff_t stride = pix->stride;
++	int w = pix->w, h = pix->h;
++	int x0 = w, x1 = 0, y0, y1, y, x;
++
++	for (y0 = 0; y0 < h && row_is_empty(s + y0 * stride, w); y0++)
++		;
++	if (y0 == h)
++		return 0;
++	for (y1 = h; row_is_empty(s + (y1 - 1) * stride, w); y1--)
++		;
++	/* Only the margins left of x0 and right of x1 still need looking at. */
++	for (y = y0; y < y1; y++)
++	{
++		const unsigned char *r = s + y * stride;
++		for (x = 0; x < x0; x++)
++			if (r[x])
++			{
++				x0 = x;
++				break;
++			}
++		for (x = w; x > x1; x--)
++			if (r[x - 1])
++			{
++				x1 = x;
++				break;
++			}
++	}
++	bbox->x0 = x0;
++	bbox->y0 = y0;
++	bbox->x1 = x1;
++	bbox->y1 = y1;
++	return 1;
++}
++
++/* Narrow the device clip to the content of the mask, with room for the scaler's
++ * filter. ctm maps the unit square onto the device. 0 if nothing is left to paint. */
++static int
++mask_content_clip(const fz_pixmap *pix, fz_matrix ctm, fz_irect *clip)
++{
++	fz_irect content;
++	fz_rect r;
++
++	if (pix->n != 1 || !mask_content_bbox(pix, &content))
++		return 0;
++	r.x0 = (float)content.x0 / pix->w;
++	r.y0 = (float)content.y0 / pix->h;
++	r.x1 = (float)content.x1 / pix->w;
++	r.y1 = (float)content.y1 / pix->h;
++	content = fz_expand_irect(fz_irect_from_rect(fz_transform_rect(r, ctm)), 2);
++	*clip = fz_intersect_irect(*clip, content);
++	return !fz_is_empty_irect(*clip);
++}
++
+ static void
+ fz_draw_fill_image_mask(fz_context *ctx, fz_device *devp, fz_image *image, fz_matrix in_ctm,
+ 	fz_colorspace *colorspace_in, const float *color, float alpha, fz_color_params color_params)
+@@ -1995,6 +2077,7 @@
+ 	fz_colorspace *colorspace = NULL;
+ 	fz_overprint op = { { 0 } };
+ 	fz_overprint *eop;
++	int nothing = 0;
+ 
+ 	if (alpha == 0)
+ 		return;
+@@ -2034,8 +2117,12 @@
+ 		if (!(devp->hints & FZ_DONT_INTERPOLATE_IMAGES) && ctx->tuning->image_scale(ctx->tuning->image_scale_arg, dx, dy, pixmap->w, pixmap->h))
+ 		{
+ 			int gridfit = alpha == 1.0f && !(dev->flags & FZ_DRAWDEV_FLAGS_TYPE3);
+-			scaled = fz_transform_pixmap(ctx, dev, pixmap, &local_ctm, state->dest->x, state->dest->y, dx, dy, gridfit, &clip);
+-			if (!scaled)
++			fz_irect scale_clip = clip;
++			if (fz_washi_mask_clip && !state->shape && !state->group_alpha &&
++				!mask_content_clip(pixmap, local_ctm, &scale_clip))
++				nothing = 1;
++			scaled = nothing ? NULL : fz_transform_pixmap(ctx, dev, pixmap, &local_ctm, state->dest->x, state->dest->y, dx, dy, gridfit, &scale_clip);
++			if (!scaled && !nothing)
+ 			{
+ 				if (dx < 1)
+ 					dx = 1;
+@@ -2052,7 +2139,8 @@
+ 
+ 		eop = resolve_color(ctx, &op, color, colorspace, alpha, color_params, colorbv, state->dest, dev->overprint_possible);
+ 
+-		fz_paint_image_with_color(ctx, state->dest, &state->scissor, state->shape, state->group_alpha, pixmap, local_ctm, colorbv, !(devp->hints & FZ_DONT_INTERPOLATE_IMAGES), eop);
++		if (!nothing)
++			fz_paint_image_with_color(ctx, state->dest, &state->scissor, state->shape, state->group_alpha, pixmap, local_ctm, colorbv, !(devp->hints & FZ_DONT_INTERPOLATE_IMAGES), eop);
+ 
+ 		if (state->blendmode & FZ_BLEND_KNOCKOUT && alpha != 1)
+ 			fz_knockout_end(ctx, dev);
+--- a/source/fitz/filter-jbig2.c
++++ b/source/fitz/filter-jbig2.c
+@@ -24,6 +24,8 @@
+ 
+ #include <jbig2.h>
+ 
++#include <string.h>
++
+ typedef struct
+ {
+ 	Jbig2Allocator alloc;
+@@ -115,8 +117,22 @@
+ 	s = state->page->data;
+ 	w = state->page->height * state->page->stride;
+ 	x = state->idx;
+-	while (p < ep && x < w)
+-		*p++ = s[x++] ^ 0xff;
++	/* washi: invert four bytes at a time. */
++	if (x < w)
++	{
++		size_t k, cnt = fz_minz(ep - p, (size_t)(w - x));
++		for (k = 0; k + 4 <= cnt; k += 4)
++		{
++			uint32_t v;
++			memcpy(&v, s + x + k, 4);
++			v = ~v;
++			memcpy(p + k, &v, 4);
++		}
++		for (; k < cnt; k++)
++			p[k] = s[x + k] ^ 0xff;
++		p += cnt;
++		x += (int)cnt;
++	}
+ 	state->idx = x;
+ 
+ 	stm->rp = buf;
+--- a/source/fitz/colorspace.c
++++ b/source/fitz/colorspace.c
+@@ -1858,11 +1858,78 @@
+ 	}
+ }
+ 
++/* washi: a pixmap with a single colour channel (gray, one-ink Separation
++ * or DeviceN, ...) is converted through a 256-entry table, which itself is
++ * made by the ordinary conversion of the 256 possible values. Same output,
++ * one pass instead of up to three. Can be switched off for comparison. */
++int fz_washi_lut_convert = 1;
++
++static void convert_pixmap_samples_imp(fz_context *ctx, const fz_pixmap *src, fz_pixmap *dst,
++	fz_colorspace *prf, const fz_default_colorspaces *default_cs, fz_color_params params, int copy_spots);
++
++static int
++convert_pixmap_samples_by_lut(fz_context *ctx, const fz_pixmap *src, fz_pixmap *dst,
++	fz_colorspace *prf, const fz_default_colorspaces *default_cs, fz_color_params params, int copy_spots)
++{
++	fz_pixmap *lsrc = NULL, *ldst = NULL;
++	int dn = dst->n;
++	int x, y, i;
++
++	if (!fz_washi_lut_convert || !src->colorspace || !dst->colorspace ||
++		src->colorspace == dst->colorspace || src->n != 1 || src->alpha || src->s ||
++		dst->alpha || dst->s || dn > FZ_MAX_COLORS || (size_t)src->w * src->h < 65536 ||
++		src->w != dst->w || src->h != dst->h)
++		return 0;
++
++	fz_var(lsrc);
++	fz_var(ldst);
++	fz_try(ctx)
++	{
++		lsrc = fz_new_pixmap(ctx, src->colorspace, 256, 1, NULL, 0);
++		ldst = fz_new_pixmap(ctx, dst->colorspace, 256, 1, NULL, 0);
++		for (i = 0; i < 256; i++)
++			lsrc->samples[i] = i;
++		convert_pixmap_samples_imp(ctx, lsrc, ldst, prf, default_cs, params, copy_spots);
++
++		for (y = 0; y < src->h; y++)
++		{
++			const unsigned char *s = src->samples + y * (size_t)src->stride;
++			unsigned char *d = dst->samples + y * (size_t)dst->stride;
++			const unsigned char *lut = ldst->samples;
++			if (dn == 1)
++				for (x = 0; x < src->w; x++)
++					d[x] = lut[s[x]];
++			else
++				for (x = 0; x < src->w; x++, d += dn)
++					memcpy(d, lut + s[x] * dn, dn);
++		}
++	}
++	fz_always(ctx)
++	{
++		fz_drop_pixmap(ctx, lsrc);
++		fz_drop_pixmap(ctx, ldst);
++	}
++	fz_catch(ctx)
++		fz_rethrow(ctx);
++	return 1;
++}
++
+ void
+ fz_convert_pixmap_samples(fz_context *ctx, const fz_pixmap *src, fz_pixmap *dst,
+ 	fz_colorspace *prf,
+ 	const fz_default_colorspaces *default_cs,
+ 	fz_color_params params,
++	int copy_spots)
++{
++	if (!convert_pixmap_samples_by_lut(ctx, src, dst, prf, default_cs, params, copy_spots))
++		convert_pixmap_samples_imp(ctx, src, dst, prf, default_cs, params, copy_spots);
++}
++
++static void
++convert_pixmap_samples_imp(fz_context *ctx, const fz_pixmap *src, fz_pixmap *dst,
++	fz_colorspace *prf,
++	const fz_default_colorspaces *default_cs,
++	fz_color_params params,
+ 	int copy_spots)
+ {
+ #if FZ_ENABLE_ICC
+--- a/source/fitz/draw-affine.c
++++ b/source/fitz/draw-affine.c
+@@ -3895,6 +3895,51 @@
+ 	return m;
+ }
+ 
++/* washi: an image mapped 1:1 onto whole device pixels (the TODO in
++ * fz_paint_image_imp) is painted a row at a time: plain copies for opaque
++ * images, the same blend as template_affine_color_N_near for masks with a
++ * colour. Only for a destination without alpha, spots, shape or group alpha.
++ * Same output. Can be switched off for comparison. */
++int fz_washi_paint_rows = 1;
++
++static void
++paint_image_rows(byte * FZ_RESTRICT dp, ptrdiff_t ds, const byte * FZ_RESTRICT sp, affint sw, affint sh, ptrdiff_t ss, affint u, affint v, int w, int h, int n, const byte * FZ_RESTRICT color)
++{
++	affint ui = u >> PREC;
++	affint vi = v >> PREC;
++	int x0 = 0, x1 = w;
++	int x, y;
++
++	if (ui < 0)
++		x0 = (int)fz_mini64(w, -ui);
++	if (ui + w > sw)
++		x1 = (int)fz_maxi64(0, sw - ui);
++	if (x0 >= x1)
++		return;
++	for (y = 0; y < h; y++, dp += ds, vi++)
++	{
++		const byte *s;
++		byte *d;
++
++		if (vi < 0 || vi >= sh)
++			continue;
++		s = sp + vi * ss + (ui + x0) * n;
++		d = dp + x0 * n;
++		if (color)
++		{
++			int sa = color[1];
++			for (x = x0; x < x1; x++, s++, d++)
++			{
++				int masa = FZ_COMBINE(FZ_EXPAND(*s), sa);
++				if (masa)
++					*d = FZ_BLEND(color[0], *d, masa);
++			}
++		}
++		else
++			memcpy(d, s, (size_t)(x1 - x0) * n);
++	}
++}
++
+ /* Draw an image with an affine transform on destination */
+ 
+ static void
+@@ -4039,6 +4084,14 @@
+ 		sn = 1;
+ 	}
+ 
++	if (fz_washi_paint_rows && !dolerp && fa == ONE && fd == ONE && fb == 0 && fc == 0 &&
++		!hp && !gp && da == 0 && dst->s == 0 && sa == 0 && sn == dn && !fz_overprint_required(eop) &&
++		(color ? dn == 1 : alpha == 255))
++	{
++		paint_image_rows(dp, dst->stride, sp, sw, sh, ss, u, v, w, h, dn, color);
++		return;
++	}
++
+ #if FZ_PLOTTERS_RGB
+ 	if (dn == 3 && dst->s == 0 && img->n == 1 + sa && !color && !fz_overprint_required(eop))
+ 	{

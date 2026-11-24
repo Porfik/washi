@@ -1,0 +1,318 @@
+--- a/source/pdf/pdf-unicode.c
++++ b/source/pdf/pdf-unicode.c
+@@ -27,21 +27,104 @@
+ 
+ /* Load or synthesize ToUnicode map for fonts */
+ 
++/* washi: the codes that a cmap maps at all (its ranges, xranges, mranges
++ * and those of its usecmaps), as sorted intervals without overlaps. A font of
++ * a few hundred glyphs often comes with a 0..65535 encoding range: looking up
++ * only these codes gives the same mappings in the same order. */
++typedef struct
++{
++	unsigned int lo, hi;
++} cpt_span;
++
++typedef struct
++{
++	cpt_span *s;
++	int len, cap;
++} cpt_spans;
++
++static void
++add_span(fz_context *ctx, cpt_spans *sp, unsigned int lo, unsigned int hi)
++{
++	if (sp->len == sp->cap)
++	{
++		int cap = sp->cap ? sp->cap * 2 : 64;
++		sp->s = fz_realloc_array(ctx, sp->s, cap, cpt_span);
++		sp->cap = cap;
++	}
++	sp->s[sp->len].lo = lo;
++	sp->s[sp->len].hi = hi;
++	sp->len++;
++}
++
++static void
++collect_spans(fz_context *ctx, cpt_spans *sp, pdf_cmap *cmap, int depth)
++{
++	int i;
++	for (i = 0; i < cmap->rlen; i++)
++		add_span(ctx, sp, cmap->ranges[i].low, cmap->ranges[i].high);
++	for (i = 0; i < cmap->xlen; i++)
++		add_span(ctx, sp, cmap->xranges[i].low, cmap->xranges[i].high);
++	for (i = 0; i < cmap->mlen; i++)
++		add_span(ctx, sp, cmap->mranges[i].low, cmap->mranges[i].low);
++	if (cmap->usecmap && depth < 64)
++		collect_spans(ctx, sp, cmap->usecmap, depth + 1);
++}
++
++static int
++cmp_span(const void *a, const void *b)
++{
++	unsigned int x = ((const cpt_span *)a)->lo, y = ((const cpt_span *)b)->lo;
++	return x < y ? -1 : x > y;
++}
++
++static void
++make_spans(fz_context *ctx, cpt_spans *sp, pdf_cmap *cmap)
++{
++	int i, n = 0;
++	collect_spans(ctx, sp, cmap, 0);
++	if (sp->len == 0)
++		return;
++	qsort(sp->s, sp->len, sizeof *sp->s, cmp_span);
++	for (i = 1; i < sp->len; i++)
++	{
++		if (sp->s[i].lo <= sp->s[n].hi || sp->s[i].lo - 1 == sp->s[n].hi)
++		{
++			if (sp->s[i].hi > sp->s[n].hi)
++				sp->s[n].hi = sp->s[i].hi;
++		}
++		else
++			sp->s[++n] = sp->s[i];
++	}
++	sp->len = n + 1;
++}
++
+ static void
+ pdf_remap_cmap_range(fz_context *ctx, pdf_cmap *ucs_from_gid,
+-	unsigned int cpt, unsigned int gid, unsigned int n, pdf_cmap *ucs_from_cpt)
++	unsigned int cpt, unsigned int gid, unsigned int n, pdf_cmap *ucs_from_cpt, const cpt_spans *spans)
+ {
+-	unsigned int k;
++	unsigned int k, c, lo, hi;
+ 	int ucsbuf[PDF_MRANGE_CAP];
+ 	int ucslen;
++	int i;
+ 
+-	for (k = 0; k <= n; ++k)
++	/* washi: only the codes in spans (see make_spans), in the same order. */
++	for (i = 0; i < spans->len; i++)
+ 	{
+-		ucslen = pdf_lookup_cmap_full(ucs_from_cpt, cpt + k, ucsbuf);
+-		if (ucslen == 1)
+-			pdf_map_range_to_range(ctx, ucs_from_gid, gid + k, gid + k, ucsbuf[0]);
+-		else if (ucslen > 1)
+-			pdf_map_one_to_many(ctx, ucs_from_gid, gid + k, ucsbuf, ucslen);
++		lo = spans->s[i].lo > cpt ? spans->s[i].lo : cpt;
++		hi = spans->s[i].hi < cpt + n ? spans->s[i].hi : cpt + n;
++		if (lo > hi)
++			continue;
++		for (c = lo; ; c++)
++		{
++			k = c - cpt;
++			ucslen = pdf_lookup_cmap_full(ucs_from_cpt, cpt + k, ucsbuf);
++			if (ucslen == 1)
++				pdf_map_range_to_range(ctx, ucs_from_gid, gid + k, gid + k, ucsbuf[0]);
++			else if (ucslen > 1)
++				pdf_map_one_to_many(ctx, ucs_from_gid, gid + k, ucsbuf, ucslen);
++			if (c == hi)
++				break;
++		}
+ 	}
+ }
+ 
+@@ -76,6 +159,7 @@
+ 	pdf_cmap *ucs_from_gid;
+ 	unsigned int a, b, x;
+ 	int i;
++	cpt_spans spans = { NULL, 0, 0 };
+ 
+ 	/* We have gid_from_cpt, and ucs_from_cpt. We want to form ucs_from_gid.
+ 	 * So: from cpt->gid and cpt->ucs, we need to form gid->ucs.
+@@ -89,11 +173,14 @@
+ 
+ 	ucs_from_gid = pdf_new_cmap(ctx);
+ 
++	fz_var(spans.s);
+ 	fz_try(ctx)
+ 	{
+ 		if (gid_from_cpt->usecmap)
+ 			ucs_from_gid->usecmap = pdf_remap_cmap(ctx, gid_from_cpt->usecmap, ucs_from_cpt);
+ 
++		make_spans(ctx, &spans, ucs_from_cpt);
++
+ 		pdf_add_codespace(ctx, ucs_from_gid, 0, 0x7fffffff, 4);
+ 
+ 		for (i = 0; i < gid_from_cpt->rlen; ++i)
+@@ -101,7 +188,7 @@
+ 			a = gid_from_cpt->ranges[i].low;
+ 			b = gid_from_cpt->ranges[i].high;
+ 			x = gid_from_cpt->ranges[i].out;
+-			pdf_remap_cmap_range(ctx, ucs_from_gid, a, x, b - a, ucs_from_cpt);
++			pdf_remap_cmap_range(ctx, ucs_from_gid, a, x, b - a, ucs_from_cpt, &spans);
+ 		}
+ 
+ 		for (i = 0; i < gid_from_cpt->xlen; ++i)
+@@ -109,13 +196,15 @@
+ 			a = gid_from_cpt->xranges[i].low;
+ 			b = gid_from_cpt->xranges[i].high;
+ 			x = gid_from_cpt->xranges[i].out;
+-			pdf_remap_cmap_range(ctx, ucs_from_gid, a, x, b - a, ucs_from_cpt);
++			pdf_remap_cmap_range(ctx, ucs_from_gid, a, x, b - a, ucs_from_cpt, &spans);
+ 		}
+ 
+ 		/* Font encoding CMaps don't have one-to-many mappings, so we can ignore the mranges. */
+ 
+ 		pdf_sort_cmap(ctx, ucs_from_gid);
+ 	}
++	fz_always(ctx)
++		fz_free(ctx, spans.s);
+ 	fz_catch(ctx)
+ 	{
+ 		pdf_drop_cmap(ctx, ucs_from_gid);
+--- a/source/fitz/pixmap.c
++++ b/source/fitz/pixmap.c
+@@ -1829,34 +1829,33 @@
+ #include <arm_neon.h>
+ extern int fz_washi_neon;
+ 
+-/* washi: fz_subsample_pixmap_ARM for one component and f = 2 or 4 with NEON:
+- * full f x f blocks are summed pairwise and shifted, exactly as the asm does;
+- * the stray column and row are divided as there (v * (65536 / count)) >> 16. */
++/* washi: fz_subsample_pixmap_ARM with NEON for 1 component (f = 2 or 4) and
++ * 3 or 4 components (f = 2): full f x f blocks are summed pairwise and shifted,
++ * exactly as the asm does; the stray column and row are divided as there,
++ * (v * (65536 / count)) >> 16. Returns 0 for other cases. */
+ static int
+-neon_subsample_gray(unsigned char *s, int w, int h, int factor, ptrdiff_t stride)
++neon_subsample(unsigned char *s, int w, int h, int n, int factor, ptrdiff_t stride)
+ {
+ 	int f = 1 << factor, shift = 2 * factor;
+ 	int ow = w / f, sx = w % f, sy = h % f;
+ 	unsigned char *d = s;
+-	int x, y, xx, yy;
++	int x, y, xx, yy, c;
+ 
+-	if (factor != 1 && factor != 2)
++	if (!((n == 1 && (factor == 1 || factor == 2)) || ((n == 3 || n == 4) && factor == 1)))
+ 		return 0;
+ 	for (y = 0; y + f <= h; y += f)
+ 	{
+ 		const unsigned char *r = s + (size_t)y * stride;
+ 		x = 0;
+-		if (f == 2)
++		if (n == 1 && f == 2)
+ 			for (; x + 16 <= ow; x += 16)
+ 			{
+ 				const unsigned char *a = r + 2 * x, *b = a + stride;
+-				uint8x16_t a0 = vld1q_u8(a), a1 = vld1q_u8(a + 16);
+-				uint8x16_t b0 = vld1q_u8(b), b1 = vld1q_u8(b + 16);
+-				uint16x8_t s0 = vaddq_u16(vpaddlq_u8(a0), vpaddlq_u8(b0));
+-				uint16x8_t s1 = vaddq_u16(vpaddlq_u8(a1), vpaddlq_u8(b1));
++				uint16x8_t s0 = vaddq_u16(vpaddlq_u8(vld1q_u8(a)), vpaddlq_u8(vld1q_u8(b)));
++				uint16x8_t s1 = vaddq_u16(vpaddlq_u8(vld1q_u8(a + 16)), vpaddlq_u8(vld1q_u8(b + 16)));
+ 				vst1q_u8(d + x, vcombine_u8(vshrn_n_u16(s0, 2), vshrn_n_u16(s1, 2)));
+ 			}
+-		else
++		else if (n == 1)
+ 			for (; x + 8 <= ow; x += 8)
+ 			{
+ 				const unsigned char *a = r + 4 * x;
+@@ -1870,43 +1869,67 @@
+ 						vpadd_u16(vget_low_u16(p1), vget_high_u16(p1)));
+ 				vst1_u8(d + x, vshrn_n_u16(p0, 4));
+ 			}
++		else if (n == 3)
++			for (; x + 8 <= ow; x += 8)
++			{
++				const unsigned char *a = r + 2 * 3 * x;
++				uint8x16x3_t p = vld3q_u8(a), q = vld3q_u8(a + stride);
++				uint8x8x3_t o;
++				for (c = 0; c < 3; c++)
++					o.val[c] = vshrn_n_u16(vaddq_u16(vpaddlq_u8(p.val[c]), vpaddlq_u8(q.val[c])), 2);
++				vst3_u8(d + 3 * x, o);
++			}
++		else
++			for (; x + 8 <= ow; x += 8)
++			{
++				const unsigned char *a = r + 2 * 4 * x;
++				uint8x16x4_t p = vld4q_u8(a), q = vld4q_u8(a + stride);
++				uint8x8x4_t o;
++				for (c = 0; c < 4; c++)
++					o.val[c] = vshrn_n_u16(vaddq_u16(vpaddlq_u8(p.val[c]), vpaddlq_u8(q.val[c])), 2);
++				vst4_u8(d + 4 * x, o);
++			}
+ 		for (; x < ow; x++)
+-		{
+-			int v = 0;
+-			for (yy = 0; yy < f; yy++)
+-				for (xx = 0; xx < f; xx++)
+-					v += r[yy * stride + x * f + xx];
+-			d[x] = v >> shift;
+-		}
++			for (c = 0; c < n; c++)
++			{
++				int v = 0;
++				for (yy = 0; yy < f; yy++)
++					for (xx = 0; xx < f; xx++)
++						v += r[yy * stride + (x * f + xx) * n + c];
++				d[x * n + c] = v >> shift;
++			}
+ 		if (sx)
+-		{
+-			int v = 0;
+-			for (yy = 0; yy < f; yy++)
+-				for (xx = 0; xx < sx; xx++)
+-					v += r[yy * stride + ow * f + xx];
+-			d[ow] = (v * (65536 / (sx * f))) >> 16;
+-		}
+-		d += ow + (sx != 0);
++			for (c = 0; c < n; c++)
++			{
++				int v = 0;
++				for (yy = 0; yy < f; yy++)
++					for (xx = 0; xx < sx; xx++)
++						v += r[yy * stride + (ow * f + xx) * n + c];
++				d[ow * n + c] = (v * (65536 / (sx * f))) >> 16;
++			}
++		d += (ow + (sx != 0)) * n;
+ 	}
+ 	if (sy)
+ 	{
+ 		const unsigned char *r = s + (size_t)y * stride;
+ 		for (x = 0; x < ow; x++)
+-		{
+-			int v = 0;
+-			for (yy = 0; yy < sy; yy++)
+-				for (xx = 0; xx < f; xx++)
+-					v += r[yy * stride + x * f + xx];
+-			d[x] = (v * (65536 / (sy * f))) >> 16;
+-		}
++			for (c = 0; c < n; c++)
++			{
++				int v = 0;
++				for (yy = 0; yy < sy; yy++)
++					for (xx = 0; xx < f; xx++)
++						v += r[yy * stride + (x * f + xx) * n + c];
++				d[x * n + c] = (v * (65536 / (sy * f))) >> 16;
++			}
+ 		if (sx)
+-		{
+-			int v = 0;
+-			for (yy = 0; yy < sy; yy++)
+-				for (xx = 0; xx < sx; xx++)
+-					v += r[yy * stride + ow * f + xx];
+-			d[ow] = (v * (65536 / (sx * sy))) >> 16;
+-		}
++			for (c = 0; c < n; c++)
++			{
++				int v = 0;
++				for (yy = 0; yy < sy; yy++)
++					for (xx = 0; xx < sx; xx++)
++						v += r[yy * stride + (ow * f + xx) * n + c];
++				d[ow * n + c] = (v * (65536 / (sx * sy))) >> 16;
++			}
+ 	}
+ 	return 1;
+ }
+@@ -1931,7 +1954,7 @@
+ 	factor *= 2;
+ #ifdef ARCH_ARM
+ #if ARCH_HAS_NEON
+-	if (fz_washi_neon && n == 1 && neon_subsample_gray(s, w, h, factor / 2, stride))
++	if (fz_washi_neon && neon_subsample(s, w, h, n, factor / 2, stride))
+ 		return;
+ #endif
+ 	{

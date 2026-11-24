@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
+  <id>urn:washi:test:long:1</id>
+  <title>Длинные названия</title>
+  <link rel="self" href="long" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="search" href="search?q={searchTerms}" type="application/atom+xml"/>
+  <entry>
+    <title>История герцогов Бургундских из дома Валуа — 1364–1477: полный текст с комментариями и приложениями</title>
+    <id>urn:washi:test:long:0</id>
+    <author><name>Барант Проспер де</name></author>
+    <summary type="text">Очень длинное название для проверки: в ленте оно идёт в две строки, а автор и форматы — в третьей.</summary>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb3.png" type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/test.epub" type="application/epub+zip"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/book0.mobi" type="application/x-mobipocket-ebook"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/book0.fb2.zip" type="application/fb2+zip"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/book0.html.zip" type="application/html+zip"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/book0.txt.zip" type="application/txt+zip"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/anon" type="application/octet-stream"/>
+  </entry>
+  <entry>
+    <title>Мцыри</title>
+    <id>urn:washi:test:long:1</id>
+    <author><name>Лермонтов Михаил Юрьевич — собрание сочинений в десяти томах</name></author>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb4.png" type="image/png"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/anon" type="application/octet-stream"/>
+  </entry>
+  <entry>
+    <title>Раздел с очень длинным названием, которое не помещается в одну строку и переносится на вторую</title>
+    <id>urn:washi:test:long:2</id>
+    <content type="text">Подпись раздела</content>
+    <link rel="subsection" href="empty" type="application/atom+xml;profile=opds-catalog"/>
+  </entry>
+</feed>

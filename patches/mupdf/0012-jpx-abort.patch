@@ -1,0 +1,89 @@
+--- a/thirdparty/openjpeg/src/lib/openjp2/t1.c
++++ b/thirdparty/openjpeg/src/lib/openjp2/t1.c
+@@ -1600,8 +1600,14 @@
+     opj_event_mgr_t *p_manager;
+     opj_mutex_t* p_manager_mutex;
+     OPJ_BOOL check_pterm;
++    const volatile int *abort; /* washi: see opj_washi_abort */
+ } opj_t1_cblk_decode_processing_job_t;
+ 
++/* washi: set (for this thread) by the caller of opj_decode to a flag that
++   becomes non-zero when the result is no longer wanted. Code blocks not yet
++   decoded are then skipped and the tile decoding fails at once. */
++_Thread_local const volatile int *opj_washi_abort = NULL;
++
+ static void opj_t1_destroy_wrapper(void* t1)
+ {
+     opj_t1_destroy((opj_t1_t*) t1);
+@@ -1666,6 +1672,11 @@
+         opj_free(job);
+         return;
+     }
++    if (job->abort && *job->abort) {
++        *(job->pret) = OPJ_FALSE;
++        opj_free(job);
++        return;
++    }
+ 
+     t1 = (opj_t1_t*) opj_tls_get(tls, OPJ_TLS_KEY_T1);
+     if (t1 == NULL) {
+@@ -1959,6 +1970,10 @@
+ #endif
+                     }
+ 
++                    if (opj_washi_abort && *opj_washi_abort) {
++                        *pret = OPJ_FALSE;
++                        return;
++                    }
+                     job = (opj_t1_cblk_decode_processing_job_t*) opj_calloc(1,
+                             sizeof(opj_t1_cblk_decode_processing_job_t));
+                     if (!job) {
+@@ -1975,6 +1990,7 @@
+                     job->p_manager_mutex = p_manager_mutex;
+                     job->p_manager = p_manager;
+                     job->check_pterm = check_pterm;
++                    job->abort = opj_washi_abort;
+                     job->mustuse_cblkdatabuffer = opj_thread_pool_get_thread_count(tp) > 1;
+                     opj_thread_pool_submit_job(tp, opj_t1_clbl_decode_processor, job);
+ #ifdef DEBUG_VERBOSE
+--- a/source/fitz/load-jpx.c
++++ b/source/fitz/load-jpx.c
+@@ -23,6 +23,7 @@
+ #include "mupdf/fitz.h"
+ 
+ #include "pixmap-imp.h"
++#include "image-imp.h"
+ 
+ #include <assert.h>
+ #include <string.h>
+@@ -62,6 +63,9 @@
+ 
+ #include <openjpeg.h>
+ 
++/* washi: see thirdparty/openjpeg/src/lib/openjp2/t1.c. */
++extern _Thread_local const volatile int *opj_washi_abort;
++
+ typedef struct
+ {
+ 	int width;
+@@ -606,12 +610,19 @@
+ 
+ 	if (!onlymeta)
+ 	{
++		OPJ_BOOL decoded;
+ 		reduce = jpx_reduce_factor(codec, jpx, l2factor ? *l2factor : 0);
+-		if (!opj_decode(codec, stream, jpx))
++		/* washi: let OpenJPEG see this thread's abort flag. */
++		opj_washi_abort = fz_washi_abort;
++		decoded = opj_decode(codec, stream, jpx);
++		opj_washi_abort = NULL;
++		if (!decoded)
+ 		{
+ 			opj_stream_destroy(stream);
+ 			opj_destroy_codec(codec);
+ 			opj_image_destroy(jpx);
++			if (fz_washi_aborted())
++				fz_throw(ctx, FZ_ERROR_ABORT, "JPX decoding aborted");
+ 			fz_throw(ctx, FZ_ERROR_LIBRARY, "Failed to decode JPX image");
+ 		}
+ 	}

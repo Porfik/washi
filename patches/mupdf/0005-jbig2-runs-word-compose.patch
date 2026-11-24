@@ -1,0 +1,159 @@
+--- a/thirdparty/jbig2dec/jbig2_arith.h
++++ b/thirdparty/jbig2dec/jbig2_arith.h
+@@ -34,6 +34,13 @@
+ /* Normally returns 0 or 1. May return negative in case of error. */
+ int jbig2_arith_decode(Jbig2Ctx *ctx, Jbig2ArithState *as, Jbig2ArithCx *pcx);
+ 
++/* washi: how many groups of unit decisions of context cx in a row would all
++   be the MPS without renormalization. jbig2_arith_take_mps then takes n <= that
++   many groups at once: the state is exactly as after n * unit calls of
++   jbig2_arith_decode, which all returned cx >> 7. */
++uint32_t jbig2_arith_mps_run(Jbig2ArithState *as, Jbig2ArithCx cx, uint32_t unit);
++void jbig2_arith_take_mps(Jbig2ArithState *as, Jbig2ArithCx cx, uint32_t unit, uint32_t n);
++
+ /* returns true if the end of the data stream has been reached (for sanity checks) */
+ bool jbig2_arith_has_reached_marker(Jbig2ArithState *as);
+ 
+--- a/thirdparty/jbig2dec/jbig2_arith.c
++++ b/thirdparty/jbig2dec/jbig2_arith.c
+@@ -368,6 +368,30 @@
+     }
+ }
+ 
++/* washi: a decision is the MPS without renormalization while A - Qe stays
++   above C >> 16 and keeps bit 15; neither C nor the context changes then, so
++   n such decisions in a row only subtract n * Qe from A. */
++uint32_t
++jbig2_arith_mps_run(Jbig2ArithState *as, Jbig2ArithCx cx, uint32_t unit)
++{
++    unsigned int index = cx & 0x7f;
++    uint32_t low;
++
++    if (index >= MAX_QE_ARRAY_SIZE || unit == 0)
++        return 0;
++    low = as->C >> 16;
++    low = low < 0x8000 ? 0x8000 : low + 1;
++    if (as->A < low)
++        return 0;
++    return (as->A - low) / (jbig2_arith_Qe[index].Qe * unit);
++}
++
++void
++jbig2_arith_take_mps(Jbig2ArithState *as, Jbig2ArithCx cx, uint32_t unit, uint32_t n)
++{
++    as->A -= n * unit * jbig2_arith_Qe[cx & 0x7f].Qe;
++}
++
+ #ifdef TEST
+ 
+ static const byte test_stream[] = {
+--- a/thirdparty/jbig2dec/jbig2_generic.c
++++ b/thirdparty/jbig2dec/jbig2_generic.c
+@@ -413,8 +413,78 @@
+             if (line2)
+                 line_m2 = (line_m2 << 8) | (x + 8 < GBW ? line2[(x >> 3) + 1] << 6 : 0);
+ 
++            /* washi: inside white areas every pixel has context 0, inside black
++               ones 0xffff. A byte whose pixels see only that colour above (bits 11..4
++               of line_m1, 18..11 of line_m2) decodes, while the colour is the MPS of
++               that context, as a run of MPS that keeps the context. Such runs are
++               taken at once while the decoder needs no renormalization, and pixel by
++               pixel around a renormalization. */
++            x_minor = 0;
++            if ((CONTEXT == 0 || CONTEXT == 0xffff) && minor_width == 8) {
++#define GEN_BYTE(line, i) ((line) != NULL && ((i) << 3) < GBW ? (line)[i] : 0)
++                const uint32_t ones = CONTEXT == 0 ? 0 : 0xffffffff;
++                const byte fill = (byte) ones;
++
++                if ((uint32_t) (GB_stats[CONTEXT] >> 7) == (ones & 1) &&
++                        ((line_m1 ^ ones) & 0xff0) == 0 && ((line_m2 ^ ones) & 0x7f800) == 0) {
++                    const uint32_t run_cx = CONTEXT;
++                    int64_t b = x >> 3, e = b + 1, lim;
++                    uint32_t n = jbig2_arith_mps_run(as, GB_stats[run_cx], 8);
++
++                    if (n > 0) {
++                        lim = b + n < GBW >> 3 ? b + n : GBW >> 3;
++                        /* four bytes at a time while both lines above are filled */
++                        if (line1 != NULL && line2 != NULL) {
++                            const int64_t inrow = (GBW + 7) >> 3;
++                            uint32_t w1, w2;
++
++                            while (e + 4 <= lim && e + 4 < inrow &&
++                                    ((line1[e] ^ fill) & 0x0f) == 0 && ((line2[e] ^ fill) & 0x1f) == 0) {
++                                memcpy(&w1, line1 + e + 1, 4);
++                                memcpy(&w2, line2 + e + 1, 4);
++                                if (((w1 ^ ones) | (w2 ^ ones)) != 0)
++                                    break;
++                                e += 4;
++                            }
++                        }
++                        while (e < lim &&
++                                ((GEN_BYTE(line1, e) ^ fill) & 0x0f) == 0 && ((GEN_BYTE(line1, e + 1) ^ fill) & 0xf0) == 0 &&
++                                ((GEN_BYTE(line2, e) ^ fill) & 0x1f) == 0 && ((GEN_BYTE(line2, e + 1) ^ fill) & 0xe0) == 0)
++                            e++;
++                        n = (uint32_t) (e - b);
++                        jbig2_arith_take_mps(as, GB_stats[run_cx], 8, n);
++                        memset(gbreg_line + b, fill, n);
++                        x += 8 * (int64_t) (n - 1);
++                        line_m1 = GEN_BYTE(line1, e);
++                        line_m2 = GEN_BYTE(line2, e) << 6;
++                        continue;
++                    }
++
++                    /* fewer than 8 such decisions before the next renormalization */
++                    while (x_minor < 8 && CONTEXT == run_cx && (uint32_t) (GB_stats[run_cx] >> 7) == (ones & 1)) {
++                        uint32_t k = jbig2_arith_mps_run(as, GB_stats[run_cx], 1);
++                        int bit;
++
++                        if (k > (uint32_t) (8 - x_minor))
++                            k = (uint32_t) (8 - x_minor);
++                        jbig2_arith_take_mps(as, GB_stats[run_cx], 1, k);
++                        result |= fill & (0xff >> x_minor) & ~(0xff >> (x_minor + k));
++                        x_minor += k;
++                        if (x_minor == 8)
++                            break;
++                        bit = jbig2_arith_decode(ctx, as, &GB_stats[CONTEXT]);
++                        if (bit < 0)
++                            return jbig2_error(ctx, JBIG2_SEVERITY_WARNING, segment->number, "failed to decode arithmetic code when handling generic template0 optimized");
++                        result |= bit << (7 - x_minor);
++                        CONTEXT = ((CONTEXT & 0x7bf7) << 1) | bit | ((line_m1 >> (7 - x_minor)) & 0x10) | ((line_m2 >> (7 - x_minor)) & 0x800);
++                        x_minor++;
++                    }
++                }
++#undef GEN_BYTE
++            }
++
+             /* This is the speed-critical inner loop. */
+-            for (x_minor = 0; x_minor < minor_width; x_minor++) {
++            for (; x_minor < minor_width; x_minor++) {
+                 int bit;
+ 
+                 bit = jbig2_arith_decode(ctx, as, &GB_stats[CONTEXT]);
+--- a/thirdparty/jbig2dec/jbig2_image.c
++++ b/thirdparty/jbig2dec/jbig2_image.c
+@@ -264,7 +264,24 @@
+             else /* Replace */
+                 *d = (v & leftmask) | (*d & ~leftmask), d++;
+             /* Central run */
+-            for (i = bytewidth; i > 0; i--) {
++#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
++            /* washi: OR four shifted bytes at a time (symbols of DjVu-made books). */
++            if (op == JBIG2_COMPOSE_OR) {
++                for (i = bytewidth; i >= 4; i -= 4, s += 4, d += 4) {
++                    uint32_t w, a;
++                    memcpy(&w, s, 4);
++                    w = __builtin_bswap32(w);
++                    memcpy(&a, d, 4);
++                    a |= __builtin_bswap32((w >> shift) | ((uint32_t) s1 << (32 - shift)));
++                    memcpy(d, &a, 4);
++                    s1 = (uint8_t) w;
++                }
++            } else
++                i = bytewidth;
++#else
++            i = bytewidth;
++#endif
++            for (; i > 0; i--) {
+                 s0 = s1; s1 = *s++;
+                 v = ((s0<<8) | s1)>>shift;
+                 if (op == JBIG2_COMPOSE_OR)

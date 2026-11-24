@@ -1,0 +1,208 @@
+--- a/source/fitz/filter-fax.c
++++ b/source/fitz/filter-fax.c
+@@ -244,6 +244,16 @@
+ 	}
+ 	while (b == 0)
+ 	{
++		/* washi: skip four bytes at a time while they just continue the run */
++		uint32_t fill = (a & 1) ? 0xffffffff : 0, v;
++		while (x + 4 < W)
++		{
++			memcpy(&v, line + x + 1, 4);
++			if (v != fill)
++				break;
++			x += 4;
++		}
++		a = line[x];
+ 		if (++x >= W)
+ 			goto nearend;
+ 		b = a & 1;
+@@ -396,8 +406,20 @@
+ 	return val;
+ }
+ 
++/* washi: dec1d and dec2d report format errors by returning -1 rather than
++ * throwing, so that next_faxd needs no fz_try (setjmp) for every code. */
++static int
++fax_error(fz_context *ctx, const char *msg, int code)
++{
++	if (code)
++		fz_warn(ctx, "%s (%d)", msg, code);
++	else
++		fz_warn(ctx, "%s", msg);
++	return -1;
++}
++
+ /* decode one 1d code */
+-static void
++static int
+ dec1d(fz_context *ctx, fz_faxd *fax)
+ {
+ 	int code;
+@@ -411,13 +433,13 @@
+ 		code = get_code(ctx, fax, cf_white_decode, cfd_white_initial_bits);
+ 
+ 	if (code == UNCOMPRESSED)
+-		fz_throw(ctx, FZ_ERROR_FORMAT, "uncompressed data in faxd");
++		return fax_error(ctx, "uncompressed data in faxd", 0);
+ 
+ 	if (code < 0)
+-		fz_throw(ctx, FZ_ERROR_FORMAT, "negative code in 1d faxd");
++		return fax_error(ctx, "negative code in 1d faxd", 0);
+ 
+ 	if (fax->a + code > fax->columns)
+-		fz_throw(ctx, FZ_ERROR_FORMAT, "overflow in 1d faxd");
++		return fax_error(ctx, "overflow in 1d faxd", 0);
+ 
+ 	if (fax->c)
+ 		setbits(fax->dst, fax->a, fax->a + code);
+@@ -431,10 +453,11 @@
+ 	}
+ 	else
+ 		fax->stage = STATE_MAKEUP;
++	return 0;
+ }
+ 
+ /* decode one 2d code */
+-static void
++static int
+ dec2d(fz_context *ctx, fz_faxd *fax)
+ {
+ 	int code, b1, b2;
+@@ -450,13 +473,13 @@
+ 			code = get_code(ctx, fax, cf_white_decode, cfd_white_initial_bits);
+ 
+ 		if (code == UNCOMPRESSED)
+-			fz_throw(ctx, FZ_ERROR_FORMAT, "uncompressed data in faxd");
++			return fax_error(ctx, "uncompressed data in faxd", 0);
+ 
+ 		if (code < 0)
+-			fz_throw(ctx, FZ_ERROR_FORMAT, "negative code in 2d faxd");
++			return fax_error(ctx, "negative code in 2d faxd", 0);
+ 
+ 		if (fax->a + code > fax->columns)
+-			fz_throw(ctx, FZ_ERROR_FORMAT, "overflow in 2d faxd");
++			return fax_error(ctx, "overflow in 2d faxd", 0);
+ 
+ 		if (fax->c)
+ 			setbits(fax->dst, fax->a, fax->a + code);
+@@ -472,7 +495,7 @@
+ 				fax->stage = STATE_NORMAL;
+ 		}
+ 
+-		return;
++		return 0;
+ 	}
+ 
+ 	code = get_code(ctx, fax, cf_2d_decode, cfd_2d_initial_bits);
+@@ -549,14 +572,38 @@
+ 		break;
+ 
+ 	case UNCOMPRESSED:
+-		fz_throw(ctx, FZ_ERROR_FORMAT, "uncompressed data in faxd");
++		return fax_error(ctx, "uncompressed data in faxd", 0);
+ 
+ 	case ERROR:
+-		fz_throw(ctx, FZ_ERROR_FORMAT, "invalid code in 2d faxd");
++		return fax_error(ctx, "invalid code in 2d faxd", 0);
+ 
+ 	default:
+-		fz_throw(ctx, FZ_ERROR_FORMAT, "invalid code in 2d faxd (%d)", code);
++		return fax_error(ctx, "invalid code in 2d faxd", code);
++	}
++	return 0;
++}
++
++/* washi: the decoded row to the output, inverted four bytes at a time. */
++static unsigned char *
++copy_row(fz_faxd *fax, unsigned char *p, unsigned char *ep)
++{
++	size_t n = fz_minz(fax->wp - fax->rp, ep - p), k = 0;
++	if (fax->black_is_1)
++		memcpy(p, fax->rp, n);
++	else
++	{
++		for (; k + 4 <= n; k += 4)
++		{
++			uint32_t v;
++			memcpy(&v, fax->rp + k, 4);
++			v = ~v;
++			memcpy(p + k, &v, 4);
++		}
++		for (; k < n; k++)
++			p[k] = fax->rp[k] ^ 0xff;
+ 	}
++	fax->rp += n;
++	return p + n;
+ }
+ 
+ static int
+@@ -638,30 +685,14 @@
+ 	else if (fax->dim == 1)
+ 	{
+ 		fax->eolc = 0;
+-		fz_try(ctx)
+-		{
+-			dec1d(ctx, fax);
+-		}
+-		fz_catch(ctx)
+-		{
+-			fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+-			fz_report_error(ctx);
++		if (dec1d(ctx, fax) < 0)
+ 			goto error;
+-		}
+ 	}
+ 	else if (fax->dim == 2)
+ 	{
+ 		fax->eolc = 0;
+-		fz_try(ctx)
+-		{
+-			dec2d(ctx, fax);
+-		}
+-		fz_catch(ctx)
+-		{
+-			fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
+-			fz_report_error(ctx);
++		if (dec2d(ctx, fax) < 0)
+ 			goto error;
+-		}
+ 	}
+ 
+ 	/* Some Fax streams appear to give up at the end. We could detect for this
+@@ -688,16 +719,7 @@
+ eol:
+ 	fax->stage = STATE_EOL;
+ 
+-	if (fax->black_is_1)
+-	{
+-		while (fax->rp < fax->wp && p < ep)
+-			*p++ = *fax->rp++;
+-	}
+-	else
+-	{
+-		while (fax->rp < fax->wp && p < ep)
+-			*p++ = *fax->rp++ ^ 0xff;
+-	}
++	p = copy_row(fax, p, ep);
+ 
+ 	if (fax->rp < fax->wp)
+ 	{
+@@ -758,16 +780,7 @@
+ 
+ error:
+ 	/* decode the remaining pixels up to where the error occurred */
+-	if (fax->black_is_1)
+-	{
+-		while (fax->rp < fax->wp && p < ep)
+-			*p++ = *fax->rp++;
+-	}
+-	else
+-	{
+-		while (fax->rp < fax->wp && p < ep)
+-			*p++ = *fax->rp++ ^ 0xff;
+-	}
++	p = copy_row(fax, p, ep);
+ 	/* fallthrough */
+ 
+ rtc:

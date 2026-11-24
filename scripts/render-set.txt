@@ -1,0 +1,12 @@
+djvu 1,2,3,12,16,44
+scan-ccitt 10-13
+scan-flate 10-12
+layout 50-52
+scan-jpeg 10-12
+manga-2 28-33
+manga-1 18-21
+datasheet-1 20-23
+fiction-2 20-22
+text-en 10-12
+fiction-1 10-12
+datasheet-2 5-8

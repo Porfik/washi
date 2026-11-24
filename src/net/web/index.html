@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Книги на InkPad</title>
+<!-- Страница приёма книг. Без внешних ресурсов: сеть может быть без интернета.
+     Встраивается в программу при сборке (CMakeLists.txt → web_index.h). -->
+<style>
+:root{--bg:#f2f3f5;--card:#fff;--fg:#1b1b1b;--mute:#5d6570;--line:#e4e7eb;--acc:#111;--onacc:#fff;
+--soft:#e9ecef;--red:#c4122f;--ok:#1b6e2d;--new:#e8f5ec;--warn:#fff3d1;--warnfg:#5b4300;--shadow:0 2px 14px rgba(0,0,0,.18)}
+@media (prefers-color-scheme:dark){:root{--bg:#121315;--card:#1d1f22;--fg:#ececec;--mute:#a0a7b0;--line:#2c2f34;
+--acc:#f2f2f2;--onacc:#111;--soft:#2a2d32;--red:#ff6b81;--ok:#6fd08a;--new:#1c3225;--warn:#3b3115;--warnfg:#f0d98a;--shadow:0 2px 14px rgba(0,0,0,.6)}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:14px 14px 28px}
+h1{font-size:22px;margin:6px 2px 14px}
+button{font:inherit;color:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}
+:focus-visible{outline:3px solid #4a8cff;outline-offset:2px}
+.btn{min-height:44px;border-radius:12px;border:2px solid var(--acc);background:var(--card);color:var(--fg);
+padding:8px 16px;font-weight:600}
+.btn:active{background:var(--soft)}
+.btn.pri{background:var(--acc);color:var(--onacc)}
+.btn.pri:active{opacity:.8}
+.btn.red{background:var(--red);border-color:var(--red);color:#fff}
+.btn:disabled{opacity:.5;cursor:default}
+
+#hero{background:var(--card);border-radius:16px;padding:14px;text-align:center}
+#pick{width:100%;min-height:64px;border:0;border-radius:14px;background:var(--acc);color:var(--onacc);
+display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 16px}
+#pick:active{opacity:.8}
+#pick b{font-size:20px;display:flex;align-items:center;gap:8px}
+#pick small{font-size:15px;opacity:.85;overflow-wrap:anywhere;font-weight:400}
+#pick svg{width:22px;height:22px;flex:none}
+.dd{display:none;color:var(--mute);margin:10px 0 0;font-size:15px}
+@media (any-pointer:fine){.dd{display:block}}
+details{margin:10px 2px 0;text-align:left;color:var(--mute);font-size:15px}
+summary{cursor:pointer;min-height:32px;display:flex;align-items:center;justify-content:center}
+details p{margin:4px 4px 2px;text-align:center}
+#warn{background:var(--warn);color:var(--warnfg);border-radius:12px;padding:10px 14px;margin-top:12px;font-size:15px}
+
+#bar{display:flex;align-items:center;gap:10px;margin:18px 0 8px}
+#crumbs{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;font-size:16px;overflow-wrap:anywhere}
+#crumbs a{color:var(--fg);text-decoration:none;padding:10px 2px;font-weight:600}
+#crumbs a:hover{text-decoration:underline}
+#crumbs i{font-style:normal;color:var(--mute);padding:0 6px}
+#crumbs span{font-weight:700;padding:10px 2px}
+#mk{flex:none;min-height:44px;padding:6px 14px;font-size:15px;white-space:nowrap}
+
+#list{background:var(--card);border-radius:16px;overflow:hidden}
+.it{display:flex;align-items:center;gap:12px;padding:8px 6px 8px 12px;min-height:60px;border-top:1px solid var(--line);
+color:inherit;text-decoration:none;position:relative}
+.it:first-child{border-top:0}
+.it.new{background:var(--new)}
+a.it:active{background:var(--soft)}
+.ico{flex:none;width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+background:var(--soft);font-size:11px;font-weight:700;letter-spacing:.2px;color:var(--mute);text-align:center;line-height:1.1;overflow:hidden}
+.ico svg{width:26px;height:26px}
+.fold .ico{color:var(--fg)}
+.tx{flex:1;min-width:0}
+.nm{overflow-wrap:anywhere;word-break:break-word;font-weight:500}
+.fold .nm{font-weight:600}
+.mt{color:var(--mute);font-size:14px}
+.tag{display:inline-block;margin-left:6px;padding:0 7px;border-radius:9px;background:var(--ok);color:#fff;font-size:12px;font-weight:700;vertical-align:1px}
+.go{flex:none;color:var(--mute);width:28px;text-align:center;font-size:22px}
+.dots{flex:none;width:44px;height:44px;border:0;border-radius:22px;background:none;display:flex;align-items:center;justify-content:center}
+.dots:active{background:var(--soft)}
+.dots svg{width:22px;height:22px}
+
+.msg{padding:34px 18px;text-align:center;color:var(--mute)}
+.msg b{display:block;color:var(--fg);font-size:18px;margin-bottom:6px}
+.msg .btn{margin-top:14px}
+#off{display:none;background:var(--card);border-radius:16px}
+body.off #off{display:block}
+body.off #hero,body.off #bar,body.off #list,body.off #foot{display:none}
+#foot{margin:12px 4px 0;color:var(--mute);font-size:14px;text-align:center}
+#foot p{margin:4px 0}
+
+#panel{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--card);box-shadow:var(--shadow);
+border-radius:16px 16px 0 0;max-width:732px;margin:0 auto;padding-bottom:env(safe-area-inset-bottom)}
+#panel[hidden]{display:none}
+#ph{display:flex;align-items:center;gap:10px;padding:8px 8px 8px 16px}
+#psum{flex:1;font-weight:700}
+#pclose{min-height:44px;padding:6px 14px;font-size:15px}
+#pl{max-height:36vh;overflow-y:auto;border-top:1px solid var(--line)}
+.up{padding:8px 16px 10px;border-top:1px solid var(--line)}
+.up:first-child{border-top:0}
+.up .row{display:flex;flex-wrap:wrap;gap:0 10px;align-items:baseline}
+.up .nm{flex:1 1 55%;font-size:15px}
+.up .st{flex:0 1 auto;max-width:100%;font-size:14px;color:var(--mute);text-align:right;overflow-wrap:anywhere}
+.up.err .st{flex-basis:100%;text-align:left}
+.up.ok .st{color:var(--ok);font-weight:600}
+.up.err .st{color:var(--red);font-weight:600}
+.up .pb{height:6px;border-radius:3px;background:var(--soft);margin-top:6px;overflow:hidden}
+.up .pb i{display:block;height:100%;width:0;background:var(--acc)}
+.up.ok .pb i{background:var(--ok)}
+.up.err .pb{display:none}
+.up .retry{border:0;background:none;color:var(--fg);text-decoration:underline;padding:6px 0;min-height:32px;font-size:14px}
+.up .note{font-size:13px;color:var(--mute);margin-top:2px}
+
+.ov{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;justify-content:center}
+.sheet,.dlg{background:var(--card);width:100%;max-width:440px;padding:16px;box-shadow:var(--shadow)}
+.sheet{border-radius:18px 18px 0 0;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+.dlg{border-radius:18px;margin:auto 12px}
+.ov h3{margin:0 0 4px;font-size:18px;overflow-wrap:anywhere}
+.ov p{margin:6px 0 12px;color:var(--mute);overflow-wrap:anywhere}
+.ov .btn{display:block;width:100%;margin-top:8px;text-align:center}
+.ov .btn.lr{text-align:left;padding-left:18px}
+.ov input{width:100%;min-height:48px;font:inherit;border:2px solid var(--acc);border-radius:12px;padding:8px 12px;
+background:var(--bg);color:var(--fg);margin:10px 0 4px}
+.ov .err{color:var(--red);font-weight:600;margin:6px 0 4px}
+.ov .acts{display:flex;gap:10px;margin-top:12px}
+.ov .acts .btn{margin:0;flex:1}
+@media (min-width:600px){.ov{align-items:center}.sheet{border-radius:18px;margin:auto}}
+
+#drop{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;
+background:rgba(255,255,255,.88);border:5px dashed #111;pointer-events:none;text-align:center;padding:30px;
+font-size:24px;font-weight:700;color:#111}
+@media (prefers-color-scheme:dark){#drop{background:rgba(18,19,21,.9);border-color:#f2f2f2;color:#f2f2f2}}
+#drop.on{display:flex}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:60;background:#222;color:#fff;
+padding:10px 18px;border-radius:22px;max-width:90%;text-align:center;display:none}
+#toast.on{display:block}
+</style>
+</head>
+<body>
+<main>
+<h1>Книги на InkPad</h1>
+
+<div id="off">
+ <div class="msg"><b>Нет связи с устройством</b>
+ <span id="offtx">Экран «Приём по Wi-Fi» на устройстве должен быть открыт.</span><br>
+ <button class="btn pri" id="retry" type="button">Повторить</button></div>
+</div>
+
+<section id="hero">
+ <button id="pick" type="button">
+  <b><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 4v12M12 4l-5 5M12 4l5 5M5 20h14"/></svg>Загрузить книги</b>
+  <small id="to">&nbsp;</small>
+ </button>
+ <p class="dd">или перетащите файлы на эту страницу</p>
+ <details><summary>Какие форматы подойдут?</summary>
+  <p>PDF, EPUB, FB2, FB2.ZIP, DjVu, MOBI, AZW3, CBZ, CBR, CHM, RTF, DOC и DOCX.</p></details>
+ <input id="file" type="file" multiple hidden>
+ <div id="warn" hidden></div>
+</section>
+
+<div id="bar">
+ <nav id="crumbs" aria-label="Путь"></nav>
+ <button class="btn" id="mk" type="button">Новая папка</button>
+</div>
+<div id="list"></div>
+<div id="foot"><p id="free"></p><p id="note"></p></div>
+</main>
+
+<aside id="panel" hidden aria-live="polite">
+ <div id="ph"><span id="psum"></span><button class="btn" id="pclose" type="button" hidden>Скрыть</button></div>
+ <div id="pl"></div>
+</aside>
+<div id="drop"><div id="droptx"></div></div>
+<div id="toast" role="status"></div>
+
+<script>
+'use strict';
+var $ = function (i) { return document.getElementById(i); };
+var cur = '', edit = false, free = -1, def = null, seq = 0, online = true;
+var queue = [], busy = false, total = 0, okn = 0, errn = 0, fresh = {};
+var LOW = 100 * 1048576, RESERVE = 4 * 1048576;
+var MON = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+var ICON_DIR = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2.2h7A2.5 2.5 0 0 1 21 8.7v8.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg>';
+var ICON_DOTS = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
+
+/* ---- мелочи ---- */
+function el(t, c, x) {
+  var e = document.createElement(t);
+  if (c) e.className = c;
+  if (x !== undefined) e.textContent = x;
+  return e;
+}
+function sz(n) {
+  if (n < 1048576) return Math.max(1, Math.round(n / 1024)) + ' КБ';
+  var m = n / 1048576, u = ' МБ';
+  if (m >= 10240) { m /= 1024; u = ' ГБ'; }
+  return (m < 10 ? m.toFixed(1) : String(Math.round(m))).replace('.', ',') + u;
+}
+function date(t) {
+  if (!t) return '';
+  var d = new Date(t * 1000), y = d.getFullYear();
+  return d.getDate() + ' ' + MON[d.getMonth()] + (y === new Date().getFullYear() ? '' : ' ' + y);
+}
+function plural(n, a, b, c) {
+  var m = n % 100, k = n % 10;
+  return n + ' ' + (m > 10 && m < 15 ? c : k === 1 ? a : k > 1 && k < 5 ? b : c);
+}
+function join(a, b) { return a === '' ? b : a + '/' + b; }
+function base(p) { return p === '' ? 'Библиотека' : p.substring(p.lastIndexOf('/') + 1); }
+function extOf(n) { var m = /(\.fb2\.zip|\.[^.\s]{1,6})$/i.exec(n); return m ? m[1] : ''; }
+function badge(n) {
+  var e = extOf(n).substring(1).toUpperCase();
+  return e || 'ФАЙЛ';
+}
+function toast(t) {
+  var e = $('toast');
+  e.textContent = t;
+  e.className = 'on';
+  clearTimeout(toast.t);
+  toast.t = setTimeout(function () { e.className = ''; }, 4500);
+}
+function api(m, u, cb) {
+  var x = new XMLHttpRequest();
+  x.open(m, u);
+  x.setRequestHeader('X-Requested-With', 'washi');
+  x.onload = function () {
+    var d = {};
+    try { d = JSON.parse(x.responseText); } catch (e) { }
+    cb(x.status, d);
+  };
+  x.onerror = function () { cb(0, { error: 'Связь с устройством оборвалась' }); };
+  x.send();
+}
+function hashFor(p) { return '#/' + p.split('/').filter(Boolean).map(encodeURIComponent).join('/'); }
+function hashDir() {
+  var h = location.hash;
+  if (h.indexOf('#/') !== 0) return undefined;
+  try { return h.substring(2).split('/').map(decodeURIComponent).join('/'); } catch (e) { return undefined; }
+}
+
+/* ---- список ---- */
+function setOnline(on, why) {
+  online = on;
+  document.body.className = on ? '' : 'off';
+  if (!on) $('offtx').textContent = why || 'Экран «Приём по Wi-Fi» на устройстве должен быть открыт.';
+}
+function ls(p, after) {
+  var my = ++seq;
+  api('GET', '/ls' + (p === undefined ? '' : '?dir=' + encodeURIComponent(p)), function (st, d) {
+    if (my !== seq) return;
+    if (st === 200) { setOnline(true); show(d); }
+    else if (st === 0) setOnline(false);
+    else if (p !== undefined) { toast(d.error || 'Не удалось открыть папку'); ls(undefined, after); return; }
+    else setOnline(false, d.error || 'Не удалось получить список.');
+    if (after) after();
+  });
+}
+function route() { window.scrollTo(0, 0); ls(hashDir()); }
+
+function entry(f, isdir) {
+  var p = join(cur, f.name), k = p + (isdir ? '/' : '');
+  var r = el(isdir ? 'a' : 'div', 'it ' + (isdir ? 'fold' : 'file') + (fresh[k] ? ' new' : ''));
+  var ic = el('span', 'ico');
+  if (isdir) { ic.innerHTML = ICON_DIR; r.href = hashFor(p); r.title = 'Открыть'; }
+  else ic.textContent = badge(f.name);
+  var tx = el('span', 'tx'), nm = el('div', 'nm', f.name);
+  if (fresh[k]) nm.appendChild(el('span', 'tag', 'новое'));
+  var meta = isdir ? date(f.mt) : [sz(f.size), date(f.mt)].filter(Boolean).join(' · ');
+  tx.appendChild(nm);
+  if (meta) tx.appendChild(el('div', 'mt', meta));
+  r.appendChild(ic);
+  r.appendChild(tx);
+  if (edit) {
+    var b = el('button', 'dots');
+    b.type = 'button';
+    b.innerHTML = ICON_DOTS;
+    b.setAttribute('aria-label', 'Действия: ' + f.name);
+    b.onclick = function (e) { e.preventDefault(); e.stopPropagation(); menu(p, f.name, isdir); };
+    r.appendChild(b);
+  } else if (isdir) r.appendChild(el('span', 'go', '›'));
+  return r;
+}
+function show(d) {
+  cur = d.dir; edit = !!d.edit; free = d.free; def = d.def;
+  if (hashDir() !== cur) history.replaceState(null, '', hashFor(cur));
+  /* крошки */
+  var c = $('crumbs'), ps = cur === '' ? [] : cur.split('/'), acc = '';
+  c.textContent = '';
+  function crumb(name, path, last) {
+    if (path !== '') c.appendChild(el('i', '', '›'));
+    if (last) { var s = el('span', '', name); s.setAttribute('aria-current', 'page'); c.appendChild(s); return; }
+    var a = el('a', '', name);
+    a.href = hashFor(path);
+    c.appendChild(a);
+  }
+  crumb('Библиотека', '', ps.length === 0);
+  ps.forEach(function (n, i) { acc = join(acc, n); crumb(n, acc, i === ps.length - 1); });
+  /* кнопка загрузки */
+  $('to').textContent = 'в «' + base(cur) + '»';
+  $('pick').title = cur === '' ? 'Библиотека' : cur;
+  /* список */
+  var l = $('list');
+  l.textContent = '';
+  d.dirs.forEach(function (f) { l.appendChild(entry(f, true)); });
+  d.files.forEach(function (f) { l.appendChild(entry(f, false)); });
+  if (!d.dirs.length && !d.files.length) {
+    var m = el('div', 'msg');
+    m.appendChild(el('b', '', 'Здесь пока пусто'));
+    m.appendChild(document.createTextNode('Загрузите книги — они появятся здесь.'));
+    l.appendChild(m);
+  }
+  /* подвал и предупреждения */
+  $('free').textContent = free >= 0 ? 'Свободно на устройстве: ' + sz(free) : '';
+  $('note').textContent = edit ? '' :
+    'Удалять и переименовывать можно, если на устройстве в «Приём по Wi-Fi» включить «Разрешить удалять и переименовывать из браузера».';
+  var w = $('warn');
+  w.hidden = !(free >= 0 && free < LOW);
+  w.textContent = 'На устройстве мало места: свободно ' + sz(Math.max(0, free)) + '. Книги могут не поместиться.';
+}
+
+/* ---- окна ---- */
+var mod = null;
+function closeMod() {
+  if (!mod) return;
+  document.removeEventListener('keydown', mod.key);
+  mod.ov.remove();
+  mod = null;
+}
+function openMod(cls) {
+  closeMod();
+  var ov = el('div', 'ov'), box = el('div', cls);
+  ov.appendChild(box);
+  ov.onmousedown = function (e) { if (e.target === ov) closeMod(); };
+  var key = function (e) { if (e.key === 'Escape') closeMod(); };
+  document.addEventListener('keydown', key);
+  document.body.appendChild(ov);
+  mod = { ov: ov, key: key };
+  return box;
+}
+function mbtn(cls, text, fn) {
+  var b = el('button', 'btn ' + cls, text);
+  b.type = 'button';
+  b.onclick = fn;
+  return b;
+}
+function menu(p, name, isdir) {
+  var b = openMod('sheet');
+  b.appendChild(el('h3', '', name));
+  b.appendChild(el('p', '', isdir ? 'Папка' : 'Файл'));
+  b.appendChild(mbtn('lr', 'Переименовать', function () { askRename(p, name, isdir); }));
+  b.appendChild(mbtn('lr', 'Удалить', function () { askDelete(p, name, isdir); }));
+  b.appendChild(mbtn('pri', 'Отмена', closeMod));
+}
+/* Окно с полем ввода и кнопкой действия; fn(значение, ошибка(текст), готово()) */
+function ask(title, value, ph, label, fn, selEnd) {
+  var b = openMod('dlg'), f = el('form');
+  b.appendChild(f);
+  f.appendChild(el('h3', '', title));
+  var inp = el('input');
+  inp.type = 'text'; inp.value = value; inp.placeholder = ph; inp.maxLength = 200;
+  inp.autocomplete = 'off'; inp.setAttribute('autocapitalize', 'off'); inp.spellcheck = false;
+  f.appendChild(inp);
+  var er = el('div', 'err');
+  er.hidden = true;
+  f.appendChild(er);
+  var acts = el('div', 'acts'), ok = el('button', 'btn pri', label);
+  ok.type = 'submit';
+  acts.appendChild(mbtn('', 'Отмена', closeMod));
+  acts.appendChild(ok);
+  f.appendChild(acts);
+  f.onsubmit = function (e) {
+    e.preventDefault();
+    var v = inp.value.trim();
+    if (!v) { er.textContent = 'Введите название'; er.hidden = false; return; }
+    er.hidden = true; ok.disabled = true;
+    fn(v, function (t) { er.textContent = t; er.hidden = false; ok.disabled = false; });
+  };
+  setTimeout(function () { inp.focus(); inp.setSelectionRange(0, selEnd === undefined ? value.length : selEnd); }, 30);
+}
+function askRename(p, name, isdir) {
+  var end = isdir ? name.length : name.length - extOf(name).length;
+  ask(isdir ? 'Переименовать папку' : 'Переименовать файл', name, 'Новое имя', 'Переименовать', function (v, bad) {
+    if (v === name) { closeMod(); return; }
+    api('POST', '/rename?path=' + encodeURIComponent(p) + '&name=' + encodeURIComponent(v), function (st, d) {
+      if (st === 200) { closeMod(); toast('Переименовано'); ls(cur); }
+      else bad(d.error || 'Не получилось переименовать');
+    });
+  }, end);
+}
+function askDelete(p, name, isdir) {
+  var b = openMod('dlg');
+  b.appendChild(el('h3', '', 'Удалить «' + name + '»?'));
+  var tx = el('p', '', isdir ? 'Папка будет удалена вместе со всем, что в ней. Это нельзя отменить.' :
+    'Файл будет удалён с устройства. Это нельзя отменить.');
+  b.appendChild(tx);
+  if (isdir) api('GET', '/count?path=' + encodeURIComponent(p), function (st, d) {
+    if (st !== 200 || !mod) return;
+    tx.textContent = (d.files ? 'В ней ' + plural(d.files, 'файл', 'файла', 'файлов') + '. ' : 'Папка пуста. ') +
+      'Это нельзя отменить.';
+  });
+  var er = el('div', 'err');
+  er.hidden = true;
+  b.appendChild(er);
+  var acts = el('div', 'acts'), cancel = mbtn('pri', 'Отмена', closeMod);
+  var del = mbtn('red', 'Удалить', function () {
+    del.disabled = true;
+    api('POST', '/delete?path=' + encodeURIComponent(p), function (st, d) {
+      if (st === 200) { closeMod(); toast('Удалено'); ls(cur); return; }
+      er.textContent = d.error || 'Не получилось удалить';
+      er.hidden = false; del.disabled = false;
+      ls(cur);
+    });
+  });
+  acts.appendChild(cancel);
+  acts.appendChild(del);
+  b.appendChild(acts);
+  cancel.focus();
+}
+function newFolder() {
+  ask('Новая папка', '', 'Название папки', 'Создать', function (v, bad) {
+    api('POST', '/mkdir?dir=' + encodeURIComponent(cur) + '&name=' + encodeURIComponent(v), function (st, d) {
+      if (st === 200) { fresh[join(cur, d.name || v) + '/'] = 1; closeMod(); ls(cur); }
+      else bad(d.error || 'Не получилось создать папку');
+    });
+  });
+}
+
+/* ---- загрузка ---- */
+function fit() {
+  var p = $('panel');
+  document.body.style.paddingBottom = p.hidden ? '' : p.offsetHeight + 'px';
+}
+function summary() {
+  var act = busy || queue.length > 0;
+  $('psum').textContent = 'Загружено ' + okn + ' из ' + total + (errn ? ' · не удалось: ' + errn : '');
+  $('pclose').hidden = act;
+  fit();
+}
+function fail(t, msg) {
+  t.row.className = 'up err';
+  t.st.textContent = msg;
+  if (!t.rb) {
+    t.rb = el('button', 'retry', 'Повторить');
+    t.rb.type = 'button';
+    t.rb.onclick = function () {
+      t.rb.remove(); t.rb = null; errn--;
+      t.row.className = 'up'; t.st.textContent = 'в очереди'; t.bar.style.width = '0';
+      queue.push(t); summary(); next();
+    };
+    t.row.appendChild(t.rb);
+  }
+  errn++;
+}
+function addFiles(items) {
+  if (!items.length) return;
+  var p = $('panel');
+  if (!busy && !queue.length) { $('pl').textContent = ''; total = okn = errn = 0; }
+  p.hidden = false;
+  items.forEach(function (it) {
+    var f = it.f, r = el('div', 'up'), row = el('div', 'row'), pb = el('div', 'pb'), bar = el('i');
+    var st = el('span', 'st', 'в очереди');
+    row.appendChild(el('span', 'nm', f.name));
+    row.appendChild(st);
+    pb.appendChild(bar);
+    r.appendChild(row);
+    r.appendChild(pb);
+    $('pl').appendChild(r);
+    var t = { f: f, dir: cur, row: r, st: st, bar: bar };
+    total++;
+    if (it.isdir) fail(t, 'Это папка. Перетащите сами книги, не папку.');
+    else if (!f.size) fail(t, 'Файл пустой');
+    else queue.push(t);
+  });
+  $('pl').scrollTop = $('pl').scrollHeight;
+  summary();
+  next();
+}
+function next() {
+  if (busy) return;
+  var t = queue.shift();
+  if (!t) { summary(); return; }
+  busy = true;
+  var finish = function () { busy = false; summary(); ls(cur, next); };
+  if (free >= 0 && t.dir === cur && t.f.size + RESERVE > free) {
+    fail(t, 'Не хватает места: файл ' + sz(t.f.size) + ', свободно ' + sz(Math.max(0, free)));
+    finish();
+    return;
+  }
+  var x = new XMLHttpRequest(), last = -1;
+  x.open('PUT', '/upload?name=' + encodeURIComponent(t.f.name) + '&dir=' + encodeURIComponent(t.dir));
+  x.setRequestHeader('X-Requested-With', 'washi');
+  x.upload.onprogress = function (e) {
+    if (!e.lengthComputable) return;
+    var c = Math.floor(100 * e.loaded / e.total);
+    if (c === last) return;
+    last = c;
+    t.bar.style.width = c + '%';
+    t.st.textContent = c + ' % из ' + sz(e.total);
+  };
+  x.upload.onload = function () { t.bar.style.width = '100%'; t.st.textContent = 'сохраняется на устройстве…'; };
+  x.onload = function () {
+    var d = {};
+    try { d = JSON.parse(x.responseText); } catch (e) { }
+    if (x.status === 200) {
+      okn++;
+      t.row.className = 'up ok';
+      t.bar.style.width = '100%';
+      t.st.textContent = 'Готово · ' + sz(t.f.size);
+      var got = d.name || t.f.name;
+      fresh[join(t.dir, got)] = 1;
+      if (got !== t.f.name) t.row.appendChild(el('div', 'note', 'Файл с таким именем уже был — сохранён как «' + got + '»'));
+    } else if (x.status === 401) fail(t, 'Нужен пароль: обновите страницу');
+    else fail(t, d.error || 'Не удалось загрузить (' + x.status + ')');
+    finish();
+  };
+  x.onerror = x.ontimeout = function () { fail(t, 'Связь оборвалась. Проверьте, что экран приёма открыт.'); finish(); };
+  t.st.textContent = '0 %';
+  x.send(t.f);
+}
+
+/* ---- события ---- */
+$('pick').onclick = function () { $('file').click(); };
+$('file').onchange = function () {
+  var a = [];
+  for (var i = 0; i < this.files.length; i++) a.push({ f: this.files[i] });
+  this.value = '';
+  addFiles(a);
+};
+$('mk').onclick = newFolder;
+$('retry').onclick = function () { ls(hashDir()); };
+$('pclose').onclick = function () { $('panel').hidden = true; fit(); };
+window.addEventListener('hashchange', route);
+
+var dn = 0;
+function hasFiles(e) {
+  var t = e.dataTransfer && e.dataTransfer.types;
+  return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
+}
+window.addEventListener('dragenter', function (e) {
+  if (!hasFiles(e) || !online) return;
+  e.preventDefault();
+  dn++;
+  $('droptx').textContent = 'Отпустите — книги попадут в «' + base(cur) + '»';
+  $('drop').className = 'on';
+});
+window.addEventListener('dragover', function (e) { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener('dragleave', function (e) {
+  if (!hasFiles(e)) return;
+  if (--dn <= 0) { dn = 0; $('drop').className = ''; }
+});
+window.addEventListener('drop', function (e) {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dn = 0;
+  $('drop').className = '';
+  if (!online) return;
+  var fs = e.dataTransfer.files, its = e.dataTransfer.items, a = [];
+  for (var i = 0; i < fs.length; i++) {
+    var en = its && its[i] && its[i].webkitGetAsEntry ? its[i].webkitGetAsEntry() : null;
+    a.push({ f: fs[i], isdir: !!(en && en.isDirectory) });
+  }
+  addFiles(a);
+});
+
+route();
+</script>
+</body>
+</html>

@@ -1,0 +1,180 @@
+--- a/source/fitz/load-jpx.c
++++ b/source/fitz/load-jpx.c
+@@ -111,8 +111,17 @@
+ 	return fz_opj_secret;
+ }
+ 
++/* washi: when set, OpenJPEG allocates straight from this (thread-safe)
++ * allocator, and JPX images are decoded without the FreeType lock and the
++ * shared context: documents on different threads then decode JPX at the same
++ * time, and text on one thread does not wait for a JPX image on another. */
++const fz_alloc_context *fz_washi_opj_alloc = NULL;
++
+ void fz_opj_lock(fz_context *ctx)
+ {
++	if (fz_washi_opj_alloc)
++		return;
++
+ 	fz_ft_lock(ctx);
+ 
+ 	set_opj_context(ctx);
+@@ -120,6 +129,9 @@
+ 
+ void fz_opj_unlock(fz_context *ctx)
+ {
++	if (fz_washi_opj_alloc)
++		return;
++
+ 	set_opj_context(NULL);
+ 
+ 	fz_ft_unlock(ctx);
+@@ -127,7 +139,12 @@
+ 
+ void *fz_opj_malloc(size_t size)
+ {
+-	fz_context *ctx = get_opj_context();
++	fz_context *ctx;
++
++	if (fz_washi_opj_alloc)
++		return fz_washi_opj_alloc->malloc(fz_washi_opj_alloc->user, size);
++
++	ctx = get_opj_context();
+ 
+ 	assert(ctx != NULL);
+ 
+@@ -136,7 +153,20 @@
+ 
+ void *fz_opj_calloc(size_t n, size_t size)
+ {
+-	fz_context *ctx = get_opj_context();
++	fz_context *ctx;
++
++	if (fz_washi_opj_alloc)
++	{
++		void *p;
++		if (size != 0 && n > SIZE_MAX / size)
++			return NULL;
++		p = fz_washi_opj_alloc->malloc(fz_washi_opj_alloc->user, n * size);
++		if (p)
++			memset(p, 0, n * size);
++		return p;
++	}
++
++	ctx = get_opj_context();
+ 
+ 	assert(ctx != NULL);
+ 
+@@ -145,7 +175,12 @@
+ 
+ void *fz_opj_realloc(void *ptr, size_t size)
+ {
+-	fz_context *ctx = get_opj_context();
++	fz_context *ctx;
++
++	if (fz_washi_opj_alloc)
++		return fz_washi_opj_alloc->realloc(fz_washi_opj_alloc->user, ptr, size);
++
++	ctx = get_opj_context();
+ 
+ 	assert(ctx != NULL);
+ 
+@@ -154,7 +189,15 @@
+ 
+ void fz_opj_free(void *ptr)
+ {
+-	fz_context *ctx = get_opj_context();
++	fz_context *ctx;
++
++	if (fz_washi_opj_alloc)
++	{
++		fz_washi_opj_alloc->free(fz_washi_opj_alloc->user, ptr);
++		return;
++	}
++
++	ctx = get_opj_context();
+ 
+ 	assert(ctx != NULL);
+ 
+--- a/source/fitz/image.c
++++ b/source/fitz/image.c
+@@ -614,6 +614,9 @@
+ 	return fz_new_stream(ctx, state, subsample_next, subsample_drop);
+ }
+ 
++/* washi: see fz_get_pixmap_from_image. 100 — off. */
++int fz_washi_jpx_min_scale = 100;
++
+ /* washi: subsample a 1-bit, 1-component image straight from its packed
+  * rows, instead of unpacking it to 8 bits and subsampling that. Gives the
+  * same samples as fz_unpack_stream + subsample_stream (+ the image mask
+@@ -690,13 +693,30 @@
+ 				size_t bx, nbytes = (size_t)w >> 3;
+ 				const unsigned char *r0 = buf, *r1 = buf + row;
+ 				if (f == 2)
+-					for (bx = 0; bx < nbytes; bx++, d += 4)
++					for (bx = 0; bx < nbytes; )
+ 					{
+-						uint32_t acc = lut[r0[bx]] + lut[r1[bx]];
+-						d[0] = full[acc & 0xff];
+-						d[1] = full[(acc >> 8) & 0xff];
+-						d[2] = full[(acc >> 16) & 0xff];
+-						d[3] = full[acc >> 24];
++						size_t end;
++						/* Uniform stretches (most of a sparse mask: all 1 bits once
++						 * inverted from JBIG2) four bytes at a time. */
++						while (bx + 4 <= nbytes)
++						{
++							uint32_t w0, w1;
++							memcpy(&w0, r0 + bx, 4);
++							memcpy(&w1, r1 + bx, 4);
++							if (w0 != w1 || (w0 != 0 && w0 != 0xffffffff))
++								break;
++							memset(d, full[w0 ? 4 : 0], 16);
++							d += 16;
++							bx += 4;
++						}
++						for (end = fz_minz(bx + 4, nbytes); bx < end; bx++, d += 4)
++						{
++							uint32_t acc = lut[r0[bx]] + lut[r1[bx]];
++							d[0] = full[acc & 0xff];
++							d[1] = full[(acc >> 8) & 0xff];
++							d[2] = full[(acc >> 16) & 0xff];
++							d[3] = full[acc >> 24];
++						}
+ 					}
+ 				else
+ 					for (bx = 0; bx < nbytes; bx++)
+@@ -1243,6 +1263,12 @@
+ 	{
+ 		while (image->w>>(l2factor+1) >= w+2 && image->h>>(l2factor+1) >= h+2 && l2factor < 6)
+ 			l2factor++;
++		/* washi: JPX (slow to decode) may come out smaller than needed, down to
++		 * fz_washi_jpx_min_scale percent of the size it is drawn at. */
++		if (fz_washi_jpx_min_scale < 100 && fz_compressed_image_type(ctx, image) == FZ_IMAGE_JPX)
++			while ((int64_t)(image->w>>(l2factor+1)) * 100 >= (int64_t)w * fz_washi_jpx_min_scale &&
++				(int64_t)(image->h>>(l2factor+1)) * 100 >= (int64_t)h * fz_washi_jpx_min_scale && l2factor < 6)
++				l2factor++;
+ 	}
+ 
+ 	/* First, look through the store for existing tiles */
+--- a/thirdparty/jbig2dec/jbig2_image.c
++++ b/thirdparty/jbig2dec/jbig2_image.c
+@@ -205,6 +205,18 @@
+             else /* Replace */
+                 *d = (*s++ & leftmask) | (*d & ~leftmask), d++;
+             /* Central run */
++            if (op == JBIG2_COMPOSE_OR) {
++                /* washi: a word at a time (page-sized regions on scanned books). */
++                for (i = bytewidth; i >= 4; i -= 4, s += 4, d += 4) {
++                    uint32_t a, b;
++                    memcpy(&a, d, 4);
++                    memcpy(&b, s, 4);
++                    a |= b;
++                    memcpy(d, &a, 4);
++                }
++                for (; i != 0; i--)
++                    *d++ |= *s++;
++            } else
+             for (i = bytewidth; i != 0; i--) {
+                 if (op == JBIG2_COMPOSE_OR)
+                     *d++ |= *s++;

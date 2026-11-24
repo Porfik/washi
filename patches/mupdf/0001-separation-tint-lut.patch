@@ -1,0 +1,41 @@
+--- a/source/fitz/pixmap.c
++++ b/source/fitz/pixmap.c
+@@ -2113,7 +2113,37 @@
+ 		sn = ss->n;
+ 		bn = base->n;
+ 
+-		if (base->type == FZ_COLORSPACE_LAB)
++		if (sn == 1 && base->type != FZ_COLORSPACE_LAB)
++		{
++			/* washi: a single 8-bit colorant has only 256 possible values,
++			 * so evaluate the (often PostScript) tint transform once per value
++			 * instead of once per pixel. Output is identical. */
++			unsigned char lut[256 * FZ_MAX_COLORS];
++			const unsigned char *l;
++			int v;
++
++			for (v = 0; v < 256; v++)
++			{
++				src_v[0] = v / 255.0f;
++				ss->u.separation.eval(ctx, ss->u.separation.tint, src_v, sn, base_v, bn);
++				for (k = 0; k < bn; ++k)
++					lut[v * bn + k] = base_v[k] * 255.0f;
++			}
++			for (y = 0; y < src->h; y++)
++			{
++				for (x = 0; x < src->w; x++)
++				{
++					l = &lut[*s++ * bn];
++					for (k = 0; k < bn; ++k)
++						*d++ = l[k];
++					if (src->alpha)
++						*d++ = *s++;
++				}
++				s += s_line_inc;
++				d += d_line_inc;
++			}
++		}
++		else if (base->type == FZ_COLORSPACE_LAB)
+ 		{
+ 			if (src->alpha)
+ 			{

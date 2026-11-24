@@ -1,0 +1,16 @@
+# Сборки и всё, что пишут скрипты (профили, снимки, значки)
+/build*/
+# MuPDF (исходники скачиваются отдельно, см. README) и свои тестовые книги
+/third_party/
+/testdata/
+# Папка данных версии для ПК (по умолчанию — в текущей папке)
+/washi-data/
+__pycache__/
+# Редакторы и IDE
+.vscode/
+.idea/
+.cache/
+compile_commands.json
+*.swp
+*~
+.DS_Store

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:os="http://a9.com/-/spec/opensearch/1.1/">
+  <id>urn:washi:test:new:2</id>
+  <title>Новинки (страница 2)</title>
+  <link rel="self" href="new2" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <link rel="search" href="search?q={searchTerms}" type="application/atom+xml"/>
+  <link rel="previous" href="new" type="application/atom+xml;profile=opds-catalog;kind=acquisition"/>
+  <entry>
+    <title>Братья Карамазовы</title>
+    <id>urn:washi:test:book:10</id>
+    <updated>2026-11-21T10:00:00Z</updated>
+    <author><name>Достоевский Фёдор</name><uri>/a/10</uri></author>
+    <content type="html">&lt;p&gt;Аннотация в &lt;i&gt;HTML&lt;/i&gt;:&amp;nbsp;Братья Карамазовы&lt;/p&gt;&lt;p&gt;Ещё абзац &amp;mdash; с тире.&lt;/p&gt;</content>
+    <link rel="http://opds-spec.org/image" href="../img/cover10.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb10.png" type="image/png"/>
+    <link rel="related" href="author10" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/scan-flate.pdf" type="application/pdf" length="3000010"/>
+    <link rel="http://opds-spec.org/acquisition/open-access" href="../dl/test.epub" type="application/epub+zip"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/book10.fb2.zip" type="application/fb2+zip"/>
+    <link rel="http://opds-spec.org/acquisition/buy" href="../buy/10" type="application/epub+zip"/>
+  </entry>
+  <entry>
+    <title>Тихий Дон</title>
+    <id>urn:washi:test:book:11</id>
+    <updated>2026-11-22T10:00:00Z</updated>
+    <author><name>Шолохов Михаил</name><uri>/a/11</uri></author>
+    <content type="text"><![CDATA[Текст в CDATA: <b>не тег</b> Тихий Дон & прочее]]></content>
+    <link rel="http://opds-spec.org/image" href="../img/cover11.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb11.png" type="image/png"/>
+    <link rel="related" href="author11" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/fiction-1.pdf" type="application/pdf"/>
+  </entry>
+  <entry>
+    <title>Двенадцать стульев</title>
+    <id>urn:washi:test:book:12</id>
+    <updated>2026-11-23T10:00:00Z</updated>
+    <author><name>Ильф Илья</name><uri>/a/12</uri></author>
+    <author><name>Петров Евгений</name><uri>/a/12</uri></author>
+    <summary type="text">Классика. Двенадцать стульев — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. Классика. Двенадцать стульев — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. Классика. Двенадцать стульев — книга для проверки аннотации: достаточно длинный текст, который не помещается в одну строку и должен переноситься по словам, а в конце обрезаться многоточием, если строк окажется слишком много. </summary>
+    <link rel="http://opds-spec.org/image" href="../img/cover12.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb12.png" type="image/png"/>
+    <link rel="related" href="author12" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/book12.djvu" type="image/vnd.djvu"/>
+  </entry>
+  <entry>
+    <title>Собачье сердце</title>
+    <id>urn:washi:test:book:13</id>
+    <updated>2026-11-24T10:00:00Z</updated>
+    <author><name>Булгаков Михаил</name><uri>/a/13</uri></author>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Первый абзац про <b>Собачье сердце</b>.</p><p>Второй абзац &amp; ещё текст<br/>после переноса.</p></div></content>
+    <link rel="http://opds-spec.org/image" href="../img/cover13.png" type="image/png"/>
+    <link rel="http://opds-spec.org/image/thumbnail" href="../img/thumb13.png" type="image/png"/>
+    <link rel="related" href="author13" type="application/atom+xml" title="Все книги автора"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/test.epub" type="application/epub+zip"/>
+    <link rel="http://opds-spec.org/acquisition" href="../dl/anon" type="application/octet-stream"/>
+  </entry>
+</feed>

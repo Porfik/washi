@@ -1,0 +1,36 @@
+--- a/thirdparty/zlib/inffast.c
++++ b/thirdparty/zlib/inffast.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "zutil.h"
++#include <string.h>
+ #include "inftrees.h"
+ #include "inflate.h"
+ #include "inffast.h"
+@@ -248,6 +249,25 @@
+                 }
+                 else {
+                     from = out - dist;          /* copy direct from output */
++                    /* washi: eight bytes at a time when the source is at least
++                       eight back (no chunk reads what it writes). The last chunk may
++                       write up to 7 bytes past the match: only when they still fit
++                       the 257 bytes beyond end. A run of one byte is a memset. */
++                    if (dist >= 8 && (unsigned)(end - out) + 257 >= len + 8) {
++                        unsigned char FAR *stop = out + len;
++                        do {
++                            memcpy(out, from, 8);
++                            out += 8;
++                            from += 8;
++                        } while (out < stop);
++                        out = stop;
++                        continue;
++                    }
++                    if (dist == 1) {
++                        memset(out, out[-1], len);
++                        out += len;
++                        continue;
++                    }
+                     do {                        /* minimum length is three */
+                         *out++ = *from++;
+                         *out++ = *from++;

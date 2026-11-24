@@ -1,0 +1,162 @@
+--- a/include/mupdf/fitz/image.h
++++ b/include/mupdf/fitz/image.h
+@@ -451,6 +451,13 @@
+ fz_pixmap *fz_load_jpx(fz_context *ctx, const unsigned char *data, size_t size, fz_colorspace *cs);
+ 
+ /**
++	washi: as fz_load_jpx, but may decode at a reduced resolution.
++	On entry *l2factor is the power-of-2 subsampling the caller wants
++	(NULL: none); on exit it is the subsampling still left to do.
++*/
++fz_pixmap *fz_load_jpx_reduced(fz_context *ctx, const unsigned char *data, size_t size, fz_colorspace *cs, int *l2factor);
++
++/**
+ 	Exposed because compression and decompression need to share this.
+ */
+ void fz_opj_lock(fz_context *ctx);
+--- a/source/fitz/image.c
++++ b/source/fitz/image.c
+@@ -840,7 +840,7 @@
+ 		tile = fz_load_jxr(ctx, image->buffer->buffer->data, image->buffer->buffer->len);
+ 		break;
+ 	case FZ_IMAGE_JPX:
+-		tile = fz_load_jpx(ctx, image->buffer->buffer->data, image->buffer->buffer->len, image->super.colorspace);
++		tile = fz_load_jpx_reduced(ctx, image->buffer->buffer->data, image->buffer->buffer->len, image->super.colorspace, l2factor);
+ 		if (image->super.use_colorkey)
+ 		{
+ 			size_t len;
+--- a/source/fitz/load-jpx.c
++++ b/source/fitz/load-jpx.c
+@@ -410,9 +410,49 @@
+ 	}
+ }
+ 
++/* washi: decode JPX at a reduced resolution when the caller is going to
++ * subsample the image anyway (l2factor), and decode with several threads.
++ * Both can be switched off at runtime for comparison. */
++int fz_washi_jpx_reduce = 1;
++int fz_washi_jpx_threads = 2;
++
++/* Largest resolution reduction we can ask OpenJPEG for, given the requested l2factor. */
++static int
++jpx_reduce_factor(opj_codec_t *codec, opj_image_t *jpx, int l2factor)
++{
++	opj_codestream_info_v2_t *info;
++	OPJ_UINT32 k;
++	int reduce = l2factor;
++
++	if (l2factor <= 0 || !fz_washi_jpx_reduce || jpx->x0 != 0 || jpx->y0 != 0)
++		return 0;
++	for (k = 0; k < jpx->numcomps; k++)
++		if (jpx->comps[k].dx != 1 || jpx->comps[k].dy != 1)
++			return 0;
++
++	info = opj_get_cstr_info(codec);
++	if (!info)
++		return 0;
++	if (!info->m_default_tile_info.tccp_info)
++		reduce = 0;
++	else
++		for (k = 0; k < info->nbcomps; k++)
++		{
++			int maxr = (int)info->m_default_tile_info.tccp_info[k].numresolutions - 1;
++			if (reduce > maxr)
++				reduce = maxr;
++		}
++	opj_destroy_cstr_info(&info);
++
++	if (reduce > 0 && !opj_set_decoded_resolution_factor(codec, (OPJ_UINT32)reduce))
++		reduce = 0;
++	return reduce;
++}
++
+ static fz_pixmap *
+-jpx_read_image(fz_context *ctx, fz_jpxd *state, const unsigned char *data, size_t size, fz_colorspace *defcs, int onlymeta)
++jpx_read_image(fz_context *ctx, fz_jpxd *state, const unsigned char *data, size_t size, fz_colorspace *defcs, int onlymeta, int *l2factor)
+ {
++	int reduce = 0;
+ 	fz_pixmap *img = NULL;
+ 	opj_dparameters_t params;
+ 	opj_codec_t *codec;
+@@ -447,6 +487,9 @@
+ 		opj_destroy_codec(codec);
+ 		fz_throw(ctx, FZ_ERROR_LIBRARY, "j2k decode failed");
+ 	}
++	/* Threads must be set before the header is read (OpenJPEG creates its tile decoder there). */
++	if (!onlymeta && fz_washi_jpx_threads > 1)
++		opj_codec_set_threads(codec, fz_washi_jpx_threads);
+ 
+ 	stream = opj_stream_default_create(OPJ_TRUE);
+ 	sb.data = data;
+@@ -469,6 +512,7 @@
+ 
+ 	if (!onlymeta)
+ 	{
++		reduce = jpx_reduce_factor(codec, jpx, l2factor ? *l2factor : 0);
+ 		if (!opj_decode(codec, stream, jpx))
+ 		{
+ 			opj_stream_destroy(stream);
+@@ -544,8 +588,18 @@
+ 		}
+ 	}
+ 
+-	w = state->width = jpx->x1 - jpx->x0;
+-	h = state->height = jpx->y1 - jpx->y0;
++	if (reduce > 0)
++	{
++		/* All components have dx = dy = 1 and the same reduced size. */
++		w = state->width = (int)jpx->comps[0].w;
++		h = state->height = (int)jpx->comps[0].h;
++		*l2factor -= reduce;
++	}
++	else
++	{
++		w = state->width = jpx->x1 - jpx->x0;
++		h = state->height = jpx->y1 - jpx->y0;
++	}
+ 	state->xres = 72; /* openjpeg does not read the JPEG 2000 resc box */
+ 	state->yres = 72; /* openjpeg does not read the JPEG 2000 resc box */
+ 
+@@ -644,13 +698,19 @@
+ fz_pixmap *
+ fz_load_jpx(fz_context *ctx, const unsigned char *data, size_t size, fz_colorspace *defcs)
+ {
++	return fz_load_jpx_reduced(ctx, data, size, defcs, NULL);
++}
++
++fz_pixmap *
++fz_load_jpx_reduced(fz_context *ctx, const unsigned char *data, size_t size, fz_colorspace *defcs, int *l2factor)
++{
+ 	fz_jpxd state = { 0 };
+ 	fz_pixmap *pix = NULL;
+ 
+ 	fz_try(ctx)
+ 	{
+ 		fz_opj_lock(ctx);
+-		pix = jpx_read_image(ctx, &state, data, size, defcs, 0);
++		pix = jpx_read_image(ctx, &state, data, size, defcs, 0, l2factor);
+ 	}
+ 	fz_always(ctx)
+ 		fz_opj_unlock(ctx);
+@@ -668,7 +728,7 @@
+ 	fz_try(ctx)
+ 	{
+ 		fz_opj_lock(ctx);
+-		jpx_read_image(ctx, &state, data, size, defcs, 1);
++		jpx_read_image(ctx, &state, data, size, defcs, 1, NULL);
+ 	}
+ 	fz_always(ctx)
+ 		fz_opj_unlock(ctx);
+@@ -689,6 +749,12 @@
+ {
+ 	fz_throw(ctx, FZ_ERROR_UNSUPPORTED, "JPX support disabled");
+ }
++
++fz_pixmap *
++fz_load_jpx_reduced(fz_context *ctx, const unsigned char *data, size_t size, fz_colorspace *defcs, int *l2factor)
++{
++	fz_throw(ctx, FZ_ERROR_UNSUPPORTED, "JPX support disabled");
++}
+ 
+ void
+ fz_load_jpx_info(fz_context *ctx, const unsigned char *data, size_t size, int *wp, int *hp, int *xresp, int *yresp, fz_colorspace **cspacep)
